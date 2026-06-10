@@ -45,8 +45,10 @@ module HColumns
     private
 
     def paint
+      # In raw mode the terminal no longer maps "\n" to CR+LF, so lines would
+      # stair-step to the right. Emit explicit CR+LF.
       @out.print("\e[2J\e[H") # clear screen, home
-      @out.print(@renderer.render(@cascade))
+      @out.print(@renderer.render(@cascade).gsub("\n", "\r\n"))
       @out.flush
     end
 
