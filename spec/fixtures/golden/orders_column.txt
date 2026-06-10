@@ -1,0 +1,8 @@
+▸ src/orders.rb  (SourceFile)
+  ⇄ PAIR
+      ● spec/orders_spec.rb        ▰▰▰▰▰  name matches spec/orders_spec.rb [structure+human]; conf 0.92
+  ↔ CO_CHANGED_WITH
+      ◌ src/payments.rb            ▰▰▱▱▱  changed together in 14 of 90 days [history]; conf 0.46
+      · src/inventory.rb           ▰▱▱▱▱  changed together in 5 of 90 days [history]; conf 0.21
+  ✎ CHANGED_BY
+      ◌ alice                      ▰▰▱▱▱  37 commits [history]; conf 0.34
