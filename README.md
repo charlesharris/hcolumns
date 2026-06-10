@@ -67,8 +67,9 @@ Example output:
 - **Cascade + TUI** — interactive side-by-side Miller columns (`hcol walk`).
 - **Workspace + on-demand providers** — neighbors are loaded lazily, only when a
   node's column is first requested. Providers: an in-memory fixture, a real
-  **filesystem** (`CONTAINS`), and **naming-rules** (source↔test `PAIR`).
+  **filesystem** (`CONTAINS`), **naming-rules** (source↔test `PAIR`), and **git**
+  (`CO_CHANGED_WITH`, `CHANGED_BY` from real history).
 
-Not yet (by design — grow small and slow): git/co-change, more tuner knobs, an
-event log / undo / snapshots, persistence, a hügel-Pile provider, an agent
-provider. See `docs/DESIGN.md` §8.
+Not yet (by design — grow small and slow): more tuner knobs (confidence floor,
+evidence-mix, live retune), an event log / undo / snapshots, persistence, a
+hügel-Pile provider, an agent provider. See `docs/DESIGN.md` §8.

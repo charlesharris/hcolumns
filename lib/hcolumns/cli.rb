@@ -67,7 +67,10 @@ module HColumns
     def target_for(arg, fixture_default:)
       path = arg && File.expand_path(arg)
       if path && File.exist?(path)
-        workspace = Workspace.new(providers: [Providers::Filesystem.new, Providers::NamingRules.new])
+        providers = [Providers::Filesystem.new, Providers::NamingRules.new]
+        repo = Providers::Git.repo_root(path)
+        providers << Providers::Git.new(repo) if repo
+        workspace = Workspace.new(providers: providers)
         root = workspace.add_node(Providers::Filesystem.node_for(path))
         [workspace, root.id]
       else
