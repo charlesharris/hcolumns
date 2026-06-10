@@ -14,7 +14,7 @@ RSpec.describe "golden column render" do
     now = FIXED_NOW
     graph = HColumns::Providers::InMemoryFixture.build(now: now)
     repo = graph.nodes.find { |n| n.name == "repo/" }.id
-    cascade = HColumns::Cascade.new(graph, repo, now: now)
+    cascade = HColumns::Cascade.new(HColumns::Workspace.new(graph: graph), repo, now: now)
     cascade.active.cursor = cascade.active_entries.index { |e| e.target.name == "src" }
     cascade.into
 

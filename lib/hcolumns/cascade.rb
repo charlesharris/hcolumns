@@ -4,17 +4,19 @@ module HColumns
   # The Miller-column traversal state: a stack of frames, each a built Column plus
   # a cursor. The rightmost frame is active; its cursor moves freely. Descending
   # ("into") pushes the selected entry's target column; "back" pops. The frames'
-  # roots are the breadcrumb of the route walked. Pure and IO-free — the TUI is a
-  # thin driver over this.
+  # roots are the breadcrumb of the route walked.
+  #
+  # Columns are pulled from a `source` (a Workspace) via `column_for`, which may
+  # lazily load a node's neighbors on first request — so navigation logic stays
+  # decoupled from where the graph comes from.
   class Cascade
     Frame = Struct.new(:column, :cursor, keyword_init: true)
 
     attr_reader :frames
 
-    def initialize(graph, root_id, tuner: Tuner.new, now:)
-      @graph = graph
+    def initialize(source, root_id, now:)
+      @source = source
       @now = now
-      @builder = ColumnBuilder.new(graph, tuner: tuner)
       @frames = [Frame.new(column: build(root_id), cursor: 0)]
     end
 
@@ -87,7 +89,7 @@ module HColumns
     private
 
     def build(node_id)
-      @builder.build(node_id, now: @now)
+      @source.column_for(node_id, now: @now)
     end
   end
 end

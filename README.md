@@ -28,11 +28,16 @@ provider that appends observations.
 
 ```sh
 bundle install
-bundle exec rspec          # 16 examples, golden-tested
+bundle exec rspec          # golden-tested
 
+# demo graph (in-memory fixture)
 ./exe/hcol explore         # the demo column for src/orders.rb
 ./exe/hcol explore repo/   # the CONTAINS (Miller-baseline) column
 ./exe/hcol nodes           # list nodes in the demo graph
+
+# a real filesystem (indexed lazily, on demand)
+./exe/hcol walk .          # interactively walk the current directory (arrows/hjkl, q quits)
+./exe/hcol explore lib     # print one ranked column for a real dir or file
 ```
 
 Example output:
@@ -50,7 +55,7 @@ Example output:
 
 `●` confirmed · `◐` reinforced · `◌` suggested · `·` observed (derived maturity).
 
-## Layer one (what's here)
+## What's here
 
 - **Property-graph substrate** — `Node`, `Observation` (the primitive), `Edge`
   (the fold: derived confidence/maturity, with provenance), `Graph`.
@@ -59,8 +64,11 @@ Example output:
   (no wall-clock in the fold, so ranking is deterministic and testable).
 - **Tuner** — `score = w_conf·confidence + w_recency·recency` (more terms later).
 - **ColumnBuilder** — outgoing edges, grouped by relation, totally ordered.
-- **In-memory fixture provider** + **text renderer** + a thin **CLI**.
+- **Cascade + TUI** — interactive side-by-side Miller columns (`hcol walk`).
+- **Workspace + on-demand providers** — neighbors are loaded lazily, only when a
+  node's column is first requested. Providers: an in-memory fixture, a real
+  **filesystem** (`CONTAINS`), and **naming-rules** (source↔test `PAIR`).
 
-Not yet (by design — grow small and slow): the interactive cascade, real
-filesystem/git providers, an event log / undo / snapshots, persistence, a Pile
+Not yet (by design — grow small and slow): git/co-change, more tuner knobs, an
+event log / undo / snapshots, persistence, a hügel-Pile provider, an agent
 provider. See `docs/DESIGN.md` §8.

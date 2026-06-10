@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 module HColumns
-  # A thin client over the graph + column builder. Layer one talks to the
-  # in-memory fixture; later layers swap in real providers behind the same calls.
+  # A thin client over a Workspace. A real filesystem path is indexed lazily via
+  # the filesystem + naming providers; anything else selects into the in-memory
+  # demo graph.
   class CLI
     def self.run(argv)
       new(argv).run
@@ -28,35 +29,31 @@ module HColumns
 
     private
 
-    # One pinned clock per invocation: graph and column see the same `now`.
+    # One pinned clock per invocation: graph and columns see the same `now`.
     def now
       @now ||= Time.now
     end
 
-    def graph
-      @graph ||= Providers::InMemoryFixture.build(now: now)
-    end
-
-    def explore(selector)
-      node_id = resolve(selector)
+    def explore(arg)
+      workspace, node_id = target_for(arg, fixture_default: "src/orders.rb")
       unless node_id
-        warn "no node matching #{selector.inspect}"
+        warn "no node matching #{arg.inspect}"
         list_nodes
         return 1
       end
-      column = ColumnBuilder.new(graph).build(node_id, now: now)
-      puts Renderers::Text.new.render(column)
+      puts Renderers::Text.new.render(workspace.column_for(node_id, now: now))
       0
     end
 
-    # Interactive Miller-column cascade. Defaults to the repo root (more to walk).
-    def walk(selector)
-      node_id = resolve(selector || "repo/")
+    # Interactive Miller-column cascade. A real dir is indexed lazily; otherwise
+    # defaults to the demo repo root.
+    def walk(arg)
+      workspace, node_id = target_for(arg, fixture_default: "repo/")
       unless node_id
-        warn "no node matching #{selector.inspect}"
+        warn "no node matching #{arg.inspect}"
         return 1
       end
-      TUI.new(Cascade.new(graph, node_id, now: now)).run
+      TUI.new(Cascade.new(workspace, node_id, now: now)).run
       0
     rescue TUI::NoTTY => e
       warn e.message
@@ -64,18 +61,34 @@ module HColumns
       1
     end
 
-    # Resolve a selector to a node id: nil => the demo default; else exact id,
-    # exact name, then substring.
-    def resolve(selector)
-      return Providers::InMemoryFixture.orders_id if selector.nil?
+    # Returns [workspace, node_id]. A real filesystem path is indexed via the
+    # filesystem/naming providers (the selected node is that path); otherwise the
+    # arg selects into the demo graph.
+    def target_for(arg, fixture_default:)
+      path = arg && File.expand_path(arg)
+      if path && File.exist?(path)
+        workspace = Workspace.new(providers: [Providers::Filesystem.new, Providers::NamingRules.new])
+        root = workspace.add_node(Providers::Filesystem.node_for(path))
+        [workspace, root.id]
+      else
+        [fixture_workspace, resolve_in_fixture(arg || fixture_default)]
+      end
+    end
 
+    def fixture_workspace
+      @fixture_workspace ||= Workspace.new(graph: Providers::InMemoryFixture.build(now: now))
+    end
+
+    # Resolve a demo selector to a node id: exact id, exact name, then substring.
+    def resolve_in_fixture(selector)
+      graph = fixture_workspace.graph
       graph.node(selector)&.id ||
         graph.nodes.find { |n| n.name.to_s == selector }&.id ||
         graph.nodes.find { |n| n.name.to_s.include?(selector) }&.id
     end
 
     def list_nodes
-      graph.nodes.sort_by { |n| n.name.to_s }.each do |n|
+      fixture_workspace.graph.nodes.sort_by { |n| n.name.to_s }.each do |n|
         puts "#{n.id}  #{n.type}  #{n.name}"
       end
       0
@@ -83,14 +96,14 @@ module HColumns
 
     def help
       puts <<~TXT
-        hcol — harris columns (layer one)
+        hcol — harris columns
 
-          hcol explore [node]   print the ranked column for a node
-                                (node = id, name, or substring; default: src/orders.rb)
-          hcol walk [node]      interactively walk the column cascade
-                                (arrows/hjkl; default: repo root)
-          hcol nodes            list nodes in the demo graph
-          hcol help             this help
+          hcol explore [node|path]   print the ranked column for a node or a real file/dir
+                                     (default: src/orders.rb in the demo graph)
+          hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl)
+                                     (a real dir is indexed lazily; default: demo repo root)
+          hcol nodes                 list nodes in the demo graph
+          hcol help                  this help
       TXT
       0
     end

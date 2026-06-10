@@ -3,8 +3,9 @@
 RSpec.describe HColumns::Cascade do
   now = FIXED_NOW
   let(:graph) { HColumns::Providers::InMemoryFixture.build(now: now) }
+  let(:source) { HColumns::Workspace.new(graph: graph) }
   let(:repo) { graph.nodes.find { |n| n.name == "repo/" }.id }
-  subject(:cascade) { described_class.new(graph, repo, now: now) }
+  subject(:cascade) { described_class.new(source, repo, now: now) }
 
   # Put the active cursor on the entry whose target has `name`.
   def nav_to(name)

@@ -32,9 +32,10 @@ module HColumns
 
     private
 
-    # Total order within a group: score desc, tie-break by target id asc.
+    # Total order within a group: score desc, then name (case-insensitive) so
+    # structural siblings read alphabetically, then id as a final determinism key.
     def sort_entries(entries)
-      entries.sort_by { |e| [-e.score, e.target.id] }
+      entries.sort_by { |e| [-e.score, e.target.name.to_s.downcase, e.target.id] }
     end
   end
 end
