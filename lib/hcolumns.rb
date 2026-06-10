@@ -10,8 +10,11 @@ require_relative "hcolumns/graph"
 require_relative "hcolumns/tuner"
 require_relative "hcolumns/column"
 require_relative "hcolumns/column_builder"
+require_relative "hcolumns/cascade"
 require_relative "hcolumns/providers/in_memory_fixture"
 require_relative "hcolumns/renderers/text"
+require_relative "hcolumns/renderers/cascade_text"
+require_relative "hcolumns/tui"
 require_relative "hcolumns/cli"
 
 # HColumns — semantically-directed Miller columns ("Harris Columns").

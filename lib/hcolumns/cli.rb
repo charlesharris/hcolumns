@@ -16,6 +16,7 @@ module HColumns
       cmd = @argv.shift || "explore"
       case cmd
       when "explore" then explore(@argv.first)
+      when "walk" then walk(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
       else
@@ -48,6 +49,21 @@ module HColumns
       0
     end
 
+    # Interactive Miller-column cascade. Defaults to the repo root (more to walk).
+    def walk(selector)
+      node_id = resolve(selector || "repo/")
+      unless node_id
+        warn "no node matching #{selector.inspect}"
+        return 1
+      end
+      TUI.new(Cascade.new(graph, node_id, now: now)).run
+      0
+    rescue TUI::NoTTY => e
+      warn e.message
+      warn "(use `hcol explore` for static output)"
+      1
+    end
+
     # Resolve a selector to a node id: nil => the demo default; else exact id,
     # exact name, then substring.
     def resolve(selector)
@@ -71,6 +87,8 @@ module HColumns
 
           hcol explore [node]   print the ranked column for a node
                                 (node = id, name, or substring; default: src/orders.rb)
+          hcol walk [node]      interactively walk the column cascade
+                                (arrows/hjkl; default: repo root)
           hcol nodes            list nodes in the demo graph
           hcol help             this help
       TXT

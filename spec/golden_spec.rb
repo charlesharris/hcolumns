@@ -9,4 +9,15 @@ RSpec.describe "golden column render" do
     )
     golden("orders_column.txt", HColumns::Renderers::Text.new.render(column))
   end
+
+  it "renders the repo › src cascade side by side" do
+    now = FIXED_NOW
+    graph = HColumns::Providers::InMemoryFixture.build(now: now)
+    repo = graph.nodes.find { |n| n.name == "repo/" }.id
+    cascade = HColumns::Cascade.new(graph, repo, now: now)
+    cascade.active.cursor = cascade.active_entries.index { |e| e.target.name == "src" }
+    cascade.into
+
+    golden("cascade_repo_src.txt", HColumns::Renderers::CascadeText.new(color: false).render(cascade))
+  end
 end

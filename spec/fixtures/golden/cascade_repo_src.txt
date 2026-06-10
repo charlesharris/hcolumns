@@ -1,0 +1,10 @@
+  repo/  ›  src
+
+⊃ CONTAINS             │ ⊃ CONTAINS            
+▸ ◌ src                │ ▸ ◌ payments.rb       
+  ◌ spec               │   ◌ inventory.rb      
+  ◌ README.md          │   ◌ orders.rb         
+
+  src/payments.rb  suggested · conf 0.63 · [structure] · via filesystem
+  directory entry
+  ↑↓/jk move · →/l descend · ←/h back · q quit
