@@ -14,9 +14,10 @@ module HColumns
 
     attr_reader :frames
 
-    def initialize(source, root_id, now:)
+    def initialize(source, root_id, now:, feed: nil)
       @source = source
       @now = now
+      @feed = feed
       @frames = [Frame.new(column: build(root_id), cursor: 0)]
     end
 
@@ -72,6 +73,23 @@ module HColumns
     def back
       @frames.pop if @frames.length > 1
       self
+    end
+
+    # --- live feed (the agent as event source) ------------------------------
+
+    # Advance the live feed to `elapsed` seconds: release any events whose time has
+    # come into the graph, and rebuild the walked path if anything landed so the
+    # cascade reflects them. Returns true iff the projection grew (the consumer's
+    # signal to repaint). A no-op without a feed (the frozen walk).
+    def tick(elapsed)
+      return false unless @feed && @feed.release(elapsed, into: @source.graph)
+
+      rebuild!
+      true
+    end
+
+    def live?
+      !@feed.nil?
     end
 
     # --- live retune (the lens knobs) ---------------------------------------

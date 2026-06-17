@@ -7,12 +7,24 @@ module HColumns
   # *is* the source of truth (mutable graph + provenance on edges); an event log
   # can slot in underneath later without changing this read interface.
   class Graph
-    def initialize
+    # An optional EventLog makes this graph log-backed: mutations are recorded as
+    # events (source of truth) *and* applied to the projection. With no log it's a
+    # plain mutable graph (layer one) — and a projection folded *from* a log is
+    # itself log-less (its log is upstream), so folding uses the apply_* path,
+    # which records nothing.
+    def initialize(log: nil)
       @nodes = {}
       @edges = {}
+      @log = log
     end
 
     def add_node(node)
+      @log&.append(kind: :node, payload: node)
+      apply_node(node)
+    end
+
+    # Apply a node to the projection without recording it (the replay path).
+    def apply_node(node)
       @nodes[node.id] = node
       node
     end
@@ -25,8 +37,14 @@ module HColumns
       @nodes.values
     end
 
-    # Fold an observation into the derived edge projection.
+    # Record + fold an observation. The fold itself is apply_observe.
     def observe(observation)
+      @log&.append(kind: :observe, at: observation.observed_at, payload: observation)
+      apply_observe(observation)
+    end
+
+    # Fold an observation into the derived edge projection (no recording).
+    def apply_observe(observation)
       edge = (@edges[observation.key] ||= Edge.new(
         subject_id: observation.subject_id,
         target_id: observation.target_id,

@@ -10,34 +10,27 @@ module HColumns
     class NoTTY < StandardError; end
 
     ETX = 3 # Ctrl-C
+    POLL_INTERVAL = 0.1 # seconds between live-feed ticks while idle
 
-    def initialize(cascade, renderer: Renderers::CascadeText.new, out: $stdout, input: $stdin)
+    def initialize(cascade, renderer: Renderers::CascadeText.new, out: $stdout, input: $stdin,
+                   clock: -> { Time.now })
       @cascade = cascade
       @renderer = renderer
       @out = out
       @input = input
+      @clock = clock
     end
 
     def run
       raise NoTTY, "hcol walk needs an interactive terminal" unless @input.tty? && @out.tty?
 
       @started = true
+      @start = @clock.call
       @out.print("\e[?25l") # hide cursor
       @prev_winch = Signal.trap("WINCH") { paint } # repaint live on terminal resize
       @input.raw do
-        loop do
-          paint
-          case read_key
-          when :up, "k" then @cascade.up
-          when :down, "j" then @cascade.down
-          when :right, "l", :enter then @cascade.into
-          when :left, "h" then @cascade.back
-          when "r" then @cascade.cycle_lens
-          when "[" then @cascade.adjust_floor(-0.05)
-          when "]" then @cascade.adjust_floor(0.05)
-          when "q", :ctrl_c, :escape then break
-          end
-        end
+        paint
+        loop { break unless @cascade.live? ? live_step : blocking_step }
       end
     ensure
       if @started
@@ -48,6 +41,52 @@ module HColumns
     end
 
     private
+
+    # One turn of the frozen walk: block for a key, act, repaint. Returns false to
+    # quit. (Behaviour unchanged from before live mode.)
+    def blocking_step
+      handled = apply_key(read_key)
+      paint unless handled == :quit
+      handled != :quit
+    end
+
+    # One turn of the live walk: wait up to POLL_INTERVAL for a key. A key acts and
+    # repaints; a timeout advances the feed and repaints only if the column grew —
+    # so an idle cascade doesn't flicker, and a settled session behaves like the
+    # frozen walk (it just waits on input). Returns false to quit.
+    def live_step
+      if wait_for_input
+        handled = apply_key(read_key)
+        paint unless handled == :quit
+        handled != :quit
+      else
+        paint if @cascade.tick(@clock.call - @start)
+        true
+      end
+    end
+
+    # Block up to POLL_INTERVAL for readable input; true if a key is waiting. A
+    # resize (SIGWINCH) interrupts the select — the handler already repainted, so
+    # just resume waiting.
+    def wait_for_input
+      !IO.select([@input], nil, nil, POLL_INTERVAL).nil?
+    rescue Errno::EINTR
+      retry
+    end
+
+    # Apply one key to the cascade; returns :quit to stop.
+    def apply_key(key)
+      case key
+      when :up, "k" then @cascade.up
+      when :down, "j" then @cascade.down
+      when :right, "l", :enter then @cascade.into
+      when :left, "h" then @cascade.back
+      when "r" then @cascade.cycle_lens
+      when "[" then @cascade.adjust_floor(-0.05)
+      when "]" then @cascade.adjust_floor(0.05)
+      when "q", :ctrl_c, :escape then :quit
+      end
+    end
 
     def paint
       # In raw mode the terminal no longer maps "\n" to CR+LF, so lines would

@@ -40,6 +40,7 @@ module HColumns
         when "--role", "--lens" then opts[:role] = @argv.shift
         when "--floor" then opts[:floor] = @argv.shift&.to_f
         when "--strict" then opts[:role] = "reviewer"
+        when "--live" then opts[:live] = true
         when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
         when /\A--floor=(.+)/ then opts[:floor] = Regexp.last_match(1).to_f
         else rest << arg
@@ -80,6 +81,8 @@ module HColumns
     # Interactive Miller-column cascade. A real dir is indexed lazily; otherwise
     # defaults to the demo repo root.
     def walk(arg)
+      return walk_live_session if arg == "session" && @opts[:live]
+
       workspace, node_id = target_for(arg, fixture_default: "repo/")
       unless node_id
         warn "no node matching #{arg.inspect}"
@@ -90,6 +93,23 @@ module HColumns
     rescue TUI::NoTTY => e
       warn e.message
       warn "(use `hcol explore` for static output)"
+      1
+    end
+
+    # The live agent session: seed the task + its driver, then let the TUI release
+    # the rest of the script (proposes a change, touches files, runs the test) as
+    # wall-clock elapses — the column grows under you. The guiding star, walkable.
+    def walk_live_session
+      feed = Providers::AgentSession.feed(now: now)
+      graph = Graph.new
+      feed.release(0.0, into: graph) # seed: the task and who is driving it exist at t0
+      workspace = Workspace.new(graph: graph, lens: lens)
+      cascade = Cascade.new(workspace, Providers::AgentSession.session_id, now: now, feed: feed)
+      TUI.new(cascade).run
+      0
+    rescue TUI::NoTTY => e
+      warn e.message
+      warn "(the live session needs an interactive terminal)"
       1
     end
 
@@ -150,6 +170,7 @@ module HColumns
                                      (a real dir is indexed lazily; default: demo repo root)
           hcol explore session       the agent-session route (Task→change→files→test→log)
           hcol walk session          walk that route interactively
+          hcol walk session --live   watch the column grow as the agent "works"
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 
