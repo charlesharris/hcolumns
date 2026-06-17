@@ -10,6 +10,15 @@ RSpec.describe "golden column render" do
     golden("orders_column.txt", HColumns::Renderers::Text.new.render(column))
   end
 
+  it "renders the same orders column under the reviewer lens (strict, structure-first)" do
+    now = FIXED_NOW
+    graph = HColumns::Providers::InMemoryFixture.build(now: now)
+    column = HColumns::ColumnBuilder.new(graph, lens: HColumns::Lens.preset(:reviewer)).build(
+      HColumns::Providers::InMemoryFixture.orders_id, now: now
+    )
+    golden("orders_column_reviewer.txt", HColumns::Renderers::Text.new.render(column))
+  end
+
   it "renders the repo › src cascade side by side" do
     now = FIXED_NOW
     graph = HColumns::Providers::InMemoryFixture.build(now: now)

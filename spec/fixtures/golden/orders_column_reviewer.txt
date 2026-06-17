@@ -1,0 +1,3 @@
+▸ src/orders.rb  (SourceFile)
+  ⇄ PAIR
+      ● spec/orders_spec.rb        ▰▰▰▰▰  name matches spec/orders_spec.rb [convention+human]; conf 1.00

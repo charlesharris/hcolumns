@@ -23,7 +23,7 @@ module HColumns
           graph.add_node(other)
           graph.observe(Observation.new(
             provider: :naming, subject_id: node.id, target_id: other.id,
-            edge_type: :PAIR, weight: 1.0, evidence_kind: :structure,
+            edge_type: :PAIR, weight: 1.0, evidence_kind: :convention,
             observed_at: now, evidence_summary: "source/test naming pair"
           ))
         end

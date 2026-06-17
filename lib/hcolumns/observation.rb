@@ -25,13 +25,28 @@ module HColumns
       [subject_id, target_id, edge_type]
     end
 
+    # A single occurrence of this observation never asserts absolute certainty,
+    # so confidence stays in [0,1) however strong one signal is.
+    MAX_RELIABILITY = 0.999
+
     def decay(now:)
       Evidence.decay(kind: evidence_kind, observed_at: observed_at, now: now)
     end
 
-    # This observation's decay-weighted, type-weighted contribution to confidence.
-    def contribution(now:)
-      decay(now: now) * Evidence.weight(evidence_kind) * weight
+    # This observation's reliability — how much it moves the edge's confidence
+    # under the noisy-OR fold; `weight` counts occurrences (the exponent).
+    #
+    # Deterministic evidence is verifiable ground truth: it returns 1.0 flat (no
+    # decay, no lens mix — you can't be more or less than certain of a fact), so a
+    # single such observation pins the edge to full confidence. Probabilistic
+    # evidence is per-occurrence certainty in (0,1), aged by decay, re-weighted by
+    # the lens's evidence-mix, and capped below 1 so it never asserts certainty.
+    def reliability(now:, mix: nil)
+      return 1.0 if Evidence.deterministic?(evidence_kind)
+
+      r = Evidence.reliability(evidence_kind) * decay(now: now)
+      r *= mix.fetch(evidence_kind, 1.0) if mix
+      r.clamp(0.0, MAX_RELIABILITY)
     end
   end
 end

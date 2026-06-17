@@ -41,11 +41,19 @@ RSpec.describe HColumns::Edge do
     expect(edge.maturity(now: now)).to eq(:confirmed)
   end
 
-  it "marks a strong multi-kind edge as reinforced" do
+  it "treats deterministic (verifiable) evidence as full confidence + confirmed" do
     edge = described_class.new(subject_id: "a", target_id: "b", type: :REL)
-    edge.add(obs(kind: :structure, now: now, day: day))
+           .add(obs(kind: :structure, age_days: 9999, now: now, day: day))
+    expect(edge.confidence(now: now)).to eq(1.0)   # exactly, however old — it's a fact
+    expect(edge.maturity(now: now)).to eq(:confirmed)
+  end
+
+  it "marks a strong multi-kind (probabilistic) edge as reinforced" do
+    edge = described_class.new(subject_id: "a", target_id: "b", type: :REL)
+    edge.add(obs(kind: :behavior, now: now, day: day))
     edge.add(obs(kind: :history, weight: 2.0, now: now, day: day))
     expect(edge.evidence_kinds.size).to eq(2)
+    expect(edge.confidence(now: now)).to be < 1.0
     expect(edge.maturity(now: now)).to eq(:reinforced)
   end
 end

@@ -22,4 +22,11 @@ RSpec.describe HColumns::Evidence do
   it "raises on an unknown evidence kind" do
     expect { described_class.kind(:nonsense) }.to raise_error(ArgumentError)
   end
+
+  it "classifies structure as deterministic ground truth and the rest as probabilistic" do
+    expect(described_class.deterministic?(:structure)).to be(true)
+    expect(described_class.deterministic?(:human)).to be(false)
+    expect(described_class.deterministic?(:convention)).to be(false)
+    expect(described_class.deterministic?(:history)).to be(false)
+  end
 end

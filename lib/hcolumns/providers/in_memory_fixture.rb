@@ -49,8 +49,8 @@ module HColumns
                observed_at: days.(0), evidence_summary: "directory entry")
         end
 
-        # structure — naming-rule source<->test pair (crisp)
-        obs.(:naming, orders, orders_t, :PAIR, weight: 1.0, evidence_kind: :structure,
+        # convention — naming-rule source<->test pair (heuristic, non-deterministic)
+        obs.(:naming, orders, orders_t, :PAIR, weight: 1.0, evidence_kind: :convention,
              observed_at: days.(0), evidence_summary: "name matches spec/orders_spec.rb")
 
         # human — someone confirmed the pair (lifts it to 'confirmed')

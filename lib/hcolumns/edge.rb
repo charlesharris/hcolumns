@@ -24,11 +24,20 @@ module HColumns
       [subject_id, target_id, type]
     end
 
-    # Σ contributions, squashed into [0,1). More / fresher / stronger / more
-    # varied evidence => higher confidence; old evidence decays out of the sum.
-    def confidence(now:)
-      sum = observations.sum { |o| o.contribution(now: now) }
-      1.0 - Math.exp(-sum)
+    # Noisy-OR over the observations: each is independent evidence that the
+    # relation holds, so confidence is the chance that *at least one* is right —
+    # 1 − ∏(1 − reliabilityᵢ). It rises with more / stronger evidence and falls as
+    # evidence decays. Deterministic kinds (structure) are near-certain from a
+    # single observation; uncertain kinds (history, inference) accrue. An
+    # observation's `weight` counts repeated occurrences (the exponent).
+    #
+    # `mix` is the lens's per-evidence-kind re-weighting — a *view* of the fold,
+    # never mutating it. nil (or a missing kind) means no change.
+    def confidence(now:, mix: nil)
+      survival = observations.reduce(1.0) do |acc, o|
+        acc * ((1.0 - o.reliability(now: now, mix: mix))**o.weight)
+      end
+      1.0 - survival
     end
 
     # Freshness of the relationship: its least-decayed (strongest-now) observation.
@@ -46,9 +55,17 @@ module HColumns
       observations.count { |o| o.evidence_kind == :human }
     end
 
-    # Derived discrete state used by the UI (and, later, crystallization).
+    # True if any observation is verifiable ground truth (a deterministic kind) —
+    # the relation is a fact read off a source, not inferred.
+    def deterministic?
+      observations.any? { |o| Evidence.deterministic?(o.evidence_kind) }
+    end
+
+    # Derived discrete state used by the UI (and, later, crystallization). Ground
+    # truth (deterministic) or a human's sign-off both count as confirmed; weaker
+    # evidence is reinforced (corroborated across kinds), then suggested/observed.
     def maturity(now:)
-      return :confirmed if human_confirmations.positive?
+      return :confirmed if deterministic? || human_confirmations.positive?
 
       c = confidence(now: now)
       return :reinforced if evidence_kinds.size >= 2 && c >= 0.5
