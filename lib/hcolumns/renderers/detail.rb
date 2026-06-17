@@ -42,7 +42,8 @@ module HColumns
         lines.join("\n")
       end
 
-      private
+      # Reusable building blocks (the DetailFacet renders structured panels from
+      # these): the node identity block, and one edge's full breakdown.
 
       def name_of(node)
         node ? node.name : "?"
@@ -71,6 +72,8 @@ module HColumns
         lines << ""
         lines
       end
+
+      private
 
       def score_line(edge, lens:, now:)
         wc = lens.tuner.weights[:confidence]
