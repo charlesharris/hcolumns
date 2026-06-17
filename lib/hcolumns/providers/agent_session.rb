@@ -41,7 +41,9 @@ module HColumns
                   ["lib/hcolumns/evidence.rb", "+1", false],
                   ["lib/hcolumns.rb", "+1", false],
                   ["spec/providers/agent_session_spec.rb", "+38", false]],
-          test: ["rspec — 84 examples", :behavior], log: "0 failures (0.9s)" },
+          test: ["rspec — 84 examples", :behavior], log: "0 failures (0.9s)",
+          # the agent's workflow phase over the timeline — drives the live modes
+          phases: [[0.0, :editing], [4.0, :testing], [5.5, :reviewing]] },
         { key: "s2", days_ago: 2, task: "fix TUI staircase in raw mode",
           change: "diff: emit CR+LF on paint",
           files: [["lib/hcolumns/tui.rb", "+6", true]],
@@ -76,7 +78,12 @@ module HColumns
           Node.new(type: type, identity: identity, properties: { name: name, path: name })
         end
 
-        session = node.(:Session, { scheme: "agent.session", key: spec[:key] }, "Task: #{spec[:task]}")
+        phases = spec[:phases] || [[0.0, :editing]]
+        session_with = lambda do |phase|
+          Node.new(type: :Session, identity: { scheme: "agent.session", key: spec[:key] },
+                   properties: { name: "Task: #{spec[:task]}", phase: phase })
+        end
+        session = session_with.(phases.first.last)
         agent   = node.(:Agent, { scheme: "agent", key: "claude" }, "claude")
         change  = node.(:ProposedChange, { scheme: "agent.change", key: "#{spec[:key]}:c1" }, spec[:change])
         files   = spec[:files].map { |path, churn, focus| [node.(:SourceFile, { scheme: "fs.path", key: "local:/repo/#{path}" }, path), churn, focus] }
@@ -112,7 +119,13 @@ module HColumns
           [tail + 1.0, obs.(test, log, :EMITTED, spec[:test][1], "suite summary line")]
         ]
 
-        { session: session, at: at, entries: timed.map { |after, e| e.merge(after: after) } }
+        # the agent declares each phase change by re-emitting the Session node with
+        # a new :phase (latest fold wins) — the event that drives the live modes.
+        phases.drop(1).each { |after, phase| timed << [after, add.(session_with.(phase))] }
+
+        # stable-sort by release time (the Feed releases sequentially)
+        entries = timed.each_with_index.sort_by { |(after, _e), i| [after, i] }.map(&:first)
+        { session: session, at: at, entries: entries.map { |after, e| e.merge(after: after) } }
       end
 
       def script(now:)

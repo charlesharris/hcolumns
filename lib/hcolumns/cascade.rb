@@ -11,7 +11,7 @@ module HColumns
   # node under another mode — cheap (re-score/regroup, no re-pull). Panels are
   # pulled from a `source` (a Workspace) whose graph may load neighbors lazily.
   class Cascade
-    Frame = Struct.new(:node, :modes, :tab, :cursor, :panel, keyword_init: true)
+    Frame = Struct.new(:node, :modes, :tab, :cursor, :panel, :pinned, keyword_init: true)
 
     attr_reader :frames, :now
 
@@ -103,6 +103,7 @@ module HColumns
       return self if frame.modes.length <= 1
 
       frame.tab = (frame.tab + delta) % frame.modes.length
+      frame.pinned = true # a manual choice — phase changes no longer move this column
       build_panel(frame)
       self
     end
@@ -114,6 +115,7 @@ module HColumns
       return self unless idx
 
       active.tab = idx
+      active.pinned = true
       build_panel(active)
       self
     end
@@ -129,6 +131,12 @@ module HColumns
     def status_label
       label = active_mode.name.to_s
       @floor.positive? ? "#{label} · floor #{format('%.2f', @floor)}" : label
+    end
+
+    # The session's current phase (what the agent is doing), or nil outside a
+    # session — what biases the auto modes.
+    def phase
+      @session&.phase
     end
 
     # --- live feed (the agent as event source) ------------------------------
@@ -161,10 +169,19 @@ module HColumns
       @frames.map(&:node)
     end
 
-    # Rebuild every frame's panel from source (after a retune / feed tick),
-    # preserving the walked path and clamping each cursor to the new item list.
+    # Rebuild every frame from source (after a retune / feed tick / phase change),
+    # preserving the walked path. Non-pinned frames re-resolve their modes so the
+    # auto tab follows the current phase; a frame the user pinned (via Tab/details)
+    # keeps its mode. Cursors clamp to the new item lists.
     def rebuild!
-      @frames.each { |frame| build_panel(frame) }
+      @frames.each do |frame|
+        frame.node = @source.graph.node(frame.node.id) || frame.node # pick up live property changes
+        unless frame.pinned
+          frame.modes = @resolver.modes_for(frame.node, session: @session)
+          frame.tab = 0
+        end
+        build_panel(frame)
+      end
       self
     end
 
@@ -172,7 +189,8 @@ module HColumns
 
     def make_frame(node_id)
       node = @source.graph.node(node_id)
-      frame = Frame.new(node: node, modes: @resolver.modes_for(node, session: @session), tab: 0, cursor: 0)
+      frame = Frame.new(node: node, modes: @resolver.modes_for(node, session: @session),
+                        tab: 0, cursor: 0, pinned: false)
       build_panel(frame)
       frame
     end

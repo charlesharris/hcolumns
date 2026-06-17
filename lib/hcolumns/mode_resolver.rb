@@ -7,13 +7,13 @@ module HColumns
   # the dynamic interface: the lens stops being one global toggle and becomes a
   # function of where you are.
   #
-  # Today the policy is keyed on node type only. The `session:` argument is the
-  # seam for the next slice: a goal/phase the agent emits will reorder this list
-  # live (float `debug` to the head while debugging, etc.) — same abstraction,
-  # the head just stops being static.
+  # The base policy is keyed on node type; a session's *phase* (what the agent is
+  # doing) then floats phase-preferred modes to the head, so the auto mode follows
+  # the workflow — a SourceFile reads as `default` while editing but flips to
+  # `details` while debugging. Phase can only promote a mode the node can actually
+  # render (applicability); `:details` is always kept available.
   class ModeResolver
-    # node type -> ordered mode keys (first = auto). `:details` rides along on
-    # everything so the inspector is always a tab away.
+    # node type -> ordered mode keys (first = auto, absent a phase).
     POLICY = {
       SourceFile: %i[default git details],
       TestFile: %i[reviewer default details],
@@ -29,19 +29,36 @@ module HColumns
 
     DEFAULT = %i[default details].freeze
 
+    # phase -> mode keys to float to the head (in this order) when they apply.
+    PHASE_PREFERENCE = {
+      exploring: %i[explorer git],
+      editing: %i[diff default],
+      testing: %i[reviewer details],
+      debugging: %i[details git],
+      reviewing: %i[reviewer diff details]
+    }.freeze
+
     def modes_for(node, session: nil)
-      keys(node, session).map { |key| Mode[key] }
+      modes = ordered_keys(node, session&.phase).map { |key| Mode[key] }.select { |mode| mode.applies?(node) }
+      ensure_details(modes)
     end
 
-    # The auto mode — the head of the ranked list.
+    # The auto mode — the head of the ranked list (shifts with the phase).
     def auto(node, session: nil)
       modes_for(node, session: session).first
     end
 
     private
 
-    def keys(node, _session)
-      POLICY.fetch(node.type, DEFAULT)
+    def ordered_keys(node, phase)
+      base = POLICY.fetch(node.type, DEFAULT)
+      return base unless phase
+
+      (PHASE_PREFERENCE.fetch(phase, []) + base).uniq # phase-preferred first, then the type defaults
+    end
+
+    def ensure_details(modes)
+      modes.any? { |m| m.name == :details } ? modes : modes + [Mode[:details]]
     end
   end
 end

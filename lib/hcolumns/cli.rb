@@ -90,7 +90,8 @@ module HColumns
         warn "no node matching #{arg.inspect}"
         return 1
       end
-      TUI.new(Cascade.new(workspace, node_id, now: now, floor: @opts[:floor].to_f)).run
+      session = session_context(workspace.graph) if arg == "session"
+      TUI.new(Cascade.new(workspace, node_id, now: now, floor: @opts[:floor].to_f, session: session)).run
       0
     rescue TUI::NoTTY => e
       warn e.message
@@ -106,13 +107,19 @@ module HColumns
       graph = Graph.new
       feed.release(0.0, into: graph) # seed: the task and who is driving it exist at t0
       workspace = Workspace.new(graph: graph, lens: lens)
-      cascade = Cascade.new(workspace, Providers::AgentSession.session_id, now: now, feed: feed, floor: @opts[:floor].to_f)
+      cascade = Cascade.new(workspace, Providers::AgentSession.session_id, now: now, feed: feed,
+                            floor: @opts[:floor].to_f, session: session_context(graph))
       TUI.new(cascade).run
       0
     rescue TUI::NoTTY => e
       warn e.message
       warn "(the live session needs an interactive terminal)"
       1
+    end
+
+    # The phase-bearing session a walk sits in, so modes follow the agent's work.
+    def session_context(graph)
+      SessionContext.new(graph: graph, node_id: Providers::AgentSession.session_id)
     end
 
     # The sessions list with the newest session streaming: the index + the older

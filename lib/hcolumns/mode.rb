@@ -17,6 +17,13 @@ module HColumns
       name.to_s
     end
 
+    # Whether this mode is meaningful for `node` — so a phase can promote a mode
+    # without forcing it onto nodes it can't render. Lens/detail modes apply to
+    # anything; a facet that reads specific edges narrows this.
+    def applies?(_node)
+      true
+    end
+
     def panel(_node, _workspace, now:)
       raise NotImplementedError
     end
@@ -131,6 +138,10 @@ module HColumns
   class DiffFacet < Mode
     def initialize(name: :diff)
       super(name: name)
+    end
+
+    def applies?(node)
+      node.type == :ProposedChange
     end
 
     def panel(node, workspace, now:)

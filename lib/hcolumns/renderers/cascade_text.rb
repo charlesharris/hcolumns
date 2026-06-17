@@ -148,7 +148,9 @@ module HColumns
 
       def breadcrumb(cascade, clipped: false)
         crumbs = "  #{clipped ? '‹ ' : ''}" + cascade.trail.map(&:name).join("  ›  ")
-        "#{crumbs}    [mode: #{cascade.status_label}]"
+        label = "mode: #{cascade.status_label}"
+        label += " · phase: #{cascade.phase}" if cascade.phase
+        "#{crumbs}    [#{label}]"
       end
 
       # Shorten a chrome line (breadcrumb / detail / hint) to the viewport width.

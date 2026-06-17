@@ -58,6 +58,10 @@ RSpec.describe HColumns::Providers::AgentSession do
     expect(focuses.confidence).to be > 0.5
   end
 
+  it "carries the agent's final phase on the session node (event-sourced)" do
+    expect(graph.node(described_class.session_id).properties[:phase]).to eq(:reviewing)
+  end
+
   it "gives touched files real fs.path identities so they unify with the code graph" do
     change = column_for("agent.change", "s1:c1")
     touched = entry(change, :TOUCHES).find { |e| e.target.name == "lib/hcolumns/evidence.rb" }
