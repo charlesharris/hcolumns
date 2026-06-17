@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 94 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 102 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -58,6 +58,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| `d6c70d2` | **11** — **dynamic interface: context-driven mode tabs**. The lens stops being one global toggle and becomes a *function of where you are*: a `ModeResolver` (keyed on node type; `session:` seam reserved for goal/phase biasing) returns a **ranked list of modes** per node — head = auto, rest = the tabs (resolver-ranked, not all-lenses). A `Mode#panel(node,ws,now) → Panel` (a rendering split into sections of headings/lines + focusable `items`); `LensMode` = the lensed column as a panel, `DetailFacet` = the inspector as a panel (the `i` modal retired — details is a tab now), `DiffFacet` = the first *renderer-carrying* facet (a `ProposedChange` as a changeset: files+churn, focus ★, ✓ status, each file descendable). `Cascade` Frame = `{node, modes, tab, cursor, panel}`; nav runs over `panel.items` (any facet); `Tab`/`r` cycle a column's modes, `i` jumps to details, `[`/`]` floor lens panels. Each column can be on a different mode at once. pty-verified on the live session. |
 | `35a0a41` | **10** — **sessions index + contextual inspector**: `sessions_graph(now:)` adds a `Sessions` index node with `HAS_SESSION` to every session (one `session_events` builder drives the live script, the frozen `build`, and the index); `hcol explore/walk sessions`, plus `--live` (the newest session streams as you descend, `live_key:` leaves it a shell). `Renderers::Detail` = the inspector: node identity/props + the edge(s) relating it + the confidence math to each observation (reliability = base × decay × lens-mix, noisy-OR vs deterministic pin) + the lens score. TUI `i` inspects the selected entry; `hcol inspect <node\|path>` inspects a node in the round (all in/out edges). Session list is alphabetical, not newest-first (recency doesn't separate non-decaying structure edges) — noted follow-up. |
 | `40aa07f` | **9** — **live event log (path a + option B)**: `EventLog` = append-only source of truth (seq/version/since/replay); `Graph` is a projection folded from it, and is **log-backed** (observe/add_node record when a log is attached, `apply_*` folds without re-recording, so the 5 pull providers are unchanged). `AgentSession` is one timed script: `build` folds it whole (frozen), `Feed` releases events as their time arrives (live). `Cascade#tick(elapsed)` releases due events + rebuilds; the `TUI` live loop waits on `IO.select` and repaints only when the column grew (no idle flicker; non-live path byte-identical). `hcol walk session --live` — the cascade grows under the walker (pty-verified). Producer is a wall-clock-polled script (single-writer, deterministic), not a thread. `:retract` event kind designed-in but deferred. |
 
@@ -87,10 +88,18 @@ lenses/            one file per lens type (subclass overrides declarative class-
 column.rb          ColumnEntry / ColumnGroup / Column   (entry score/confidence come from the lens)
 column_builder.rb  outgoing edges -> lens scope+floor filter -> grouped by relation -> total order
 workspace.rb       graph + providers + a swappable lens; column_for() expands lazily; the pull seam
-cascade.rb         Miller traversal: frames, cursor, into/back, preview, trail; cycle_lens/adjust_floor;
-                   tick(elapsed) advances an optional live feed + rebuilds the walked path; live?
+panel.rb           what a column generalizes to: a Panel = sections of headings/display lines +
+                   focusable items (the cursor's index space); PanelItem(target_id, maturity, glyph,…)
+mode.rb            Mode#panel(node,ws,now)->Panel + a name->mode registry. LensMode = lensed column as
+                   a panel; DetailFacet = inspector as a panel (items = the node's edges); DiffFacet =
+                   a ProposedChange as a changeset (the first renderer-carrying facet)
+mode_resolver.rb   node type -> ranked [Mode] (head = auto, :details always present). session: arg is
+                   the reserved seam for goal/phase biasing (slice 2). The keystone of the dynamic UI
+cascade.rb         Miller traversal: Frame={node,modes,tab,cursor,panel}; nav over panel.items;
+                   into/back, next_tab/prev_tab/show_details, adjust_floor (global, lens panels only),
+                   preview_panel (auto mode), tick(elapsed) advances the live feed + rebuilds; live?
 tui.rb (live)      live loop waits on IO.select(POLL); key → act+repaint, timeout → tick + repaint only
-                   if the column grew (no flicker; settled session waits on input; non-live unchanged)
+                   if the column grew (no flicker). Tab/r cycle modes, i → details tab, [ ] floor
 providers/
   in_memory_fixture.rb  demo coding-workspace graph (golden substrate)
   agent_session.rb      the guiding-star sessions. SESSIONS specs → session_events (one timed builder);
@@ -214,9 +223,19 @@ roughly in dependency order:
   the `HAS_SESSION` edges because `structure` doesn't decay (recency stays 1.0). Wants a recency
   notion driven by `observed_at` age independent of the decay curve (touches the tuner/Edge#recency);
   adjacent to the "decaying deterministic confidence" knob already in §9.
-- **Inspector depth.** `Renderers::Detail` covers a node + its edges + confidence math. Could grow:
-  the full event/seq history behind an edge (now that the log carries it), `[`/`]`-style live retune
-  reflected in the open inspector, or a side-panel variant instead of the full-screen page.
+- **Inspector depth.** `DetailFacet` covers a node + its edges + confidence math. Could grow: the
+  full event/seq history behind an edge (now that the log carries it).
+- **Dynamic interface — slice 2 (the headline next).** The `ModeResolver` already threads `session:`
+  but ignores it. Make the agent emit goal/phase events (a `Goal` node / session property) that
+  reorder the mode list *live* — `debug` floats to the head while debugging, etc. This is the part
+  that's genuinely agent-native: the UI mode follows what the agent is doing, not just where you are.
+  Eventually the goal also biases *ranking* (a goal-relevance term — edges toward the hugel-v1 "soil").
+- **More facets.** Only `diff` exists. `test`/`debug`/`log` facets (a `TestRun` foregrounding the
+  failing assertion; a `LogLine` showing surrounding output) are the obvious next renderer-carrying
+  modes — they slot in as `Mode` subclasses + a resolver policy entry, no core change.
+- **Auto-mode feel.** Per-frame auto modes are in; worth living with to judge whether the default
+  picks (e.g. `SourceFile`→`default`, `ProposedChange`→`diff`) are right, and whether re-descending
+  should remember a pinned tab (today it reopens on auto).
 - **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
   a session lens that dims code-graph noise is now a concrete want.
 - **Tune lens preset constants**; **lens label in the static renderer**; **other-language code
