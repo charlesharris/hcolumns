@@ -18,7 +18,7 @@ module HColumns
       SourceFile: %i[default git details],
       TestFile: %i[reviewer default details],
       Directory: %i[default git details],
-      ProposedChange: %i[reviewer git details],
+      ProposedChange: %i[diff reviewer details],
       TestRun: %i[default details],
       LogLine: %i[default details],
       Session: %i[default details],

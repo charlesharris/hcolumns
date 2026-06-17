@@ -10,9 +10,9 @@ RSpec.describe HColumns::Renderers::CascadeText do
   # repo › src › orders.rb (+ a preview) — enough panels to force clipping when narrow.
   def cascade
     c = HColumns::Cascade.new(HColumns::Workspace.new(graph: graph), repo, now: now)
-    c.active.cursor = c.active_entries.index { |e| e.target.name == "src" }
+    c.active.cursor = c.active_entries.index { |e| e.label == "src" }
     c.into
-    c.active.cursor = c.active_entries.index { |e| e.target.name == "src/orders.rb" }
+    c.active.cursor = c.active_entries.index { |e| e.label == "src/orders.rb" }
     c.into
     c
   end

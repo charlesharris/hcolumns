@@ -43,6 +43,7 @@ module HColumns
         modes = {}
         Lens.names.each { |lens_name| modes[lens_name] = LensMode.new(name: lens_name, lens: Lens.preset(lens_name)) }
         modes[:details] = DetailFacet.new
+        modes[:diff] = DiffFacet.new
         modes
       end
     end
@@ -115,6 +116,56 @@ module HColumns
         )
       end
       PanelSection.new(heading: "#{heading} (#{items.size})", items: items)
+    end
+
+    def name_of(node)
+      node ? node.name : "?"
+    end
+  end
+
+  # The first *renderer-carrying* facet: a ProposedChange as a changeset, not a
+  # relation column. It reads the same TOUCHES / FOCUSES_ON / VERIFIED_BY edges
+  # but presents them as a diff — files with churn, the focus file starred, a
+  # verification status line — and each file stays focusable (descend into it).
+  # This is "facets are the thing": same evidence, a genuinely different view.
+  class DiffFacet < Mode
+    def initialize(name: :diff)
+      super(name: name)
+    end
+
+    def panel(node, workspace, now:)
+      workspace.expand(node.id, now: now)
+      graph = workspace.graph
+      out = graph.edges_from(node.id)
+      touches = out.select { |e| e.type == :TOUCHES }
+      focus = out.select { |e| e.type == :FOCUSES_ON }.map(&:target_id)
+      verified = out.find { |e| e.type == :VERIFIED_BY }
+
+      header = PanelSection.new(lines: ["#{touches.size} file(s) changed", ""])
+      files = PanelSection.new(items: touches.map { |e| file_item(e, graph, focus, now) })
+      status = verified ? "✓ #{name_of(graph.node(verified.target_id))}" : "• not verified"
+      footer = PanelSection.new(lines: ["", status])
+
+      Panel.new(node: node, mode: name, sections: [header, files, footer])
+    end
+
+    private
+
+    def file_item(edge, graph, focus, now)
+      file = graph.node(edge.target_id)
+      churn = churn_of(edge)
+      star = focus.include?(edge.target_id) ? "  ★" : ""
+      PanelItem.new(label: "#{basename(file)}#{churn}#{star}", target_id: edge.target_id, glyph: "~",
+                    maturity: edge.maturity(now: now), confidence: edge.confidence(now: now), reason: churn.strip)
+    end
+
+    def churn_of(edge)
+      summary = edge.observations.map(&:evidence_summary).compact.first.to_s
+      summary =~ /\(([^)]+)\)/ ? "  #{Regexp.last_match(1)}" : ""
+    end
+
+    def basename(node)
+      node ? node.name.to_s.split("/").last : "?"
     end
 
     def name_of(node)

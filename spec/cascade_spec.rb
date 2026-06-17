@@ -7,9 +7,9 @@ RSpec.describe HColumns::Cascade do
   let(:repo) { graph.nodes.find { |n| n.name == "repo/" }.id }
   subject(:cascade) { described_class.new(source, repo, now: now) }
 
-  # Put the active cursor on the entry whose target has `name`.
+  # Put the active cursor on the item labeled `name`.
   def nav_to(name)
-    idx = cascade.active_entries.index { |e| e.target.name == name }
+    idx = cascade.active_entries.index { |e| e.label == name }
     raise "no entry for #{name.inspect}" unless idx
 
     cascade.active.cursor = idx
@@ -17,7 +17,7 @@ RSpec.describe HColumns::Cascade do
 
   it "starts at the root with a single frame" do
     expect(cascade.depth).to eq(1)
-    expect(cascade.active_column.root.name).to eq("repo/")
+    expect(cascade.current_node.name).to eq("repo/")
     expect(cascade.active.cursor).to eq(0)
   end
 
@@ -36,11 +36,11 @@ RSpec.describe HColumns::Cascade do
     nav_to("src")
     cascade.into
     expect(cascade.depth).to eq(2)
-    expect(cascade.active_column.root.name).to eq("src")
+    expect(cascade.current_node.name).to eq("src")
 
     cascade.back
     expect(cascade.depth).to eq(1)
-    expect(cascade.active_column.root.name).to eq("repo/")
+    expect(cascade.current_node.name).to eq("repo/")
   end
 
   it "never pops past the root" do
@@ -54,13 +54,13 @@ RSpec.describe HColumns::Cascade do
     nav_to("src/orders.rb")
     cascade.into
 
-    expect(cascade.active_column.root.name).to eq("src/orders.rb")
+    expect(cascade.current_node.name).to eq("src/orders.rb")
     expect(cascade.trail.map(&:name)).to eq(["repo/", "src", "src/orders.rb"])
   end
 
-  it "previews the active selection's target column without walking into it" do
+  it "previews the active selection's target under its own auto mode, without walking in" do
     nav_to("src")
-    expect(cascade.preview_column.root.name).to eq("src")
+    expect(cascade.preview_panel.node.name).to eq("src")
     expect(cascade.depth).to eq(1) # preview does not push a frame
   end
 
@@ -69,7 +69,7 @@ RSpec.describe HColumns::Cascade do
     cascade.into
     nav_to("src/payments.rb") # only an incoming co-change target
     cascade.into
-    expect(cascade.active_column).to be_empty
+    expect(cascade.active_panel).to be_empty
     expect(cascade.selected_entry).to be_nil
   end
 end

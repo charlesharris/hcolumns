@@ -50,11 +50,19 @@ module HColumns
       def build_panels(cascade)
         panels = cascade.frames.each_with_index.map do |frame, i|
           active = i == cascade.frames.length - 1
-          panel(frame.column, frame.cursor, active ? :active : :committed)
+          tab_cell(frame, active) + panel_cells(frame.panel, frame.cursor, active ? :active : :committed)
         end
-        preview = cascade.preview_column
-        panels << panel(preview, -1, :preview, preview: true) if preview && !preview.empty?
+        preview = cascade.preview_panel
+        if preview && !preview.empty?
+          panels << ([{ t: "preview", s: :preview }] + panel_cells(preview, -1, :preview, preview: true))
+        end
         panels
+      end
+
+      # The per-column tab strip: the modes a column offers, the open one bracketed.
+      def tab_cell(frame, active)
+        strip = frame.modes.each_with_index.map { |m, i| i == frame.tab ? "[#{m.name}]" : m.name.to_s }.join(" ")
+        [{ t: strip, s: active ? :header : :preview }]
       end
 
       # Keep the rightmost panels (active + preview + recent ancestors) that fit at
@@ -82,23 +90,33 @@ module HColumns
         [height - (4 + info_lines), 1].max
       end
 
-      # A panel is an array of {t:, s:} cells (one per visual row).
-      def panel(column, cursor, selected_style, preview: false)
+      # A panel renders to an array of {t:, s:} cells (one per visual row). Sections
+      # contribute a heading (if any), then plain display lines, then focusable
+      # items; the cursor indexes the flattened items only.
+      def panel_cells(panel, cursor, selected_style, preview: false)
         cells = []
         flat = 0
-        column.groups.each do |group|
-          cells << { t: "#{RELATION[group.relation]} #{group.relation}", s: preview ? :preview : :header }
-          group.entries.each do |entry|
+        panel.sections.each do |section|
+          cells << { t: heading_text(section), s: preview ? :preview : :header } if section.heading
+          section.lines.each { |line| cells << { t: line, s: preview ? :preview : :normal } }
+          section.items.each do |item|
             selected = flat == cursor
             mark = selected ? "▸" : " "
-            text = "#{mark} #{MATURITY.fetch(entry.maturity, '·')} #{short(entry.target.name)}"
+            glyph = item.glyph || MATURITY.fetch(item.maturity, "·")
             style = preview ? :preview : (selected ? selected_style : :normal)
-            cells << { t: text, s: style }
+            cells << { t: "#{mark} #{glyph} #{short(item.label)}", s: style }
             flat += 1
           end
         end
-        cells << { t: "(leaf)", s: preview ? :preview : :normal } if column.empty?
+        cells << { t: "(leaf)", s: preview ? :preview : :normal } if panel.empty?
         cells
+      end
+
+      # A relation-family heading gets its glyph; a composite facet heading (which
+      # has spaces, e.g. "how it's reached — incoming (2)") prints as-is.
+      def heading_text(section)
+        h = section.heading
+        h.include?(" ") ? h : "#{RELATION[h.to_sym]} #{h}"
       end
 
       def columns(panels, col_width, max_rows)
@@ -130,8 +148,7 @@ module HColumns
 
       def breadcrumb(cascade, clipped: false)
         crumbs = "  #{clipped ? '‹ ' : ''}" + cascade.trail.map(&:name).join("  ›  ")
-        label = cascade.lens_label
-        label ? "#{crumbs}    [lens: #{label}]" : crumbs
+        "#{crumbs}    [mode: #{cascade.status_label}]"
       end
 
       # Shorten a chrome line (breadcrumb / detail / hint) to the viewport width.
@@ -143,22 +160,22 @@ module HColumns
       end
 
       def detail(cascade)
-        entry = cascade.selected_entry
-        return "  (nothing selected)" unless entry
+        item = cascade.selected_entry
+        return "  (nothing selected)" unless item
 
-        kinds = entry.edge.evidence_kinds.join("+")
-        vias = entry.provenance.map(&:provider).uniq.join(", ")
-        summary = entry.provenance.filter_map(&:evidence_summary).first
-        line1 = "  #{entry.target.name}  #{entry.maturity} · conf #{format('%.2f', entry.confidence)} · [#{kinds}] · via #{vias}"
-        summary ? "#{line1}\n  #{summary}" : line1
+        line = "  #{item.label}"
+        line += "  #{item.reason}" if item.reason && !item.reason.empty?
+        line
       end
 
       def hint
-        "  ↑↓/jk move · →/l descend · ←/h back · r lens · [ ] floor · q quit"
+        "  ↑↓/jk move · →/l descend · ←/h back · Tab modes · i details · [ ] floor · q quit"
       end
 
-      def short(name)
-        name.to_s.split("/").last
+      # Basename a path-like label for narrow columns; leave composite labels
+      # (which contain spaces, e.g. a diff row or a details edge) intact.
+      def short(label)
+        label.include?(" ") ? label : label.split("/").last
       end
 
       def fit(str, width)

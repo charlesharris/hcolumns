@@ -90,7 +90,7 @@ module HColumns
         warn "no node matching #{arg.inspect}"
         return 1
       end
-      TUI.new(Cascade.new(workspace, node_id, now: now)).run
+      TUI.new(Cascade.new(workspace, node_id, now: now, floor: @opts[:floor].to_f)).run
       0
     rescue TUI::NoTTY => e
       warn e.message
@@ -106,7 +106,7 @@ module HColumns
       graph = Graph.new
       feed.release(0.0, into: graph) # seed: the task and who is driving it exist at t0
       workspace = Workspace.new(graph: graph, lens: lens)
-      cascade = Cascade.new(workspace, Providers::AgentSession.session_id, now: now, feed: feed)
+      cascade = Cascade.new(workspace, Providers::AgentSession.session_id, now: now, feed: feed, floor: @opts[:floor].to_f)
       TUI.new(cascade).run
       0
     rescue TUI::NoTTY => e
@@ -124,7 +124,7 @@ module HColumns
       feed = Providers::AgentSession.feed(now: now)
       feed.release(0.0, into: graph) # seed the live session's t0 onto its shell node
       workspace = Workspace.new(graph: graph, lens: lens)
-      cascade = Cascade.new(workspace, Providers::AgentSession.index_id, now: now, feed: feed)
+      cascade = Cascade.new(workspace, Providers::AgentSession.index_id, now: now, feed: feed, floor: @opts[:floor].to_f)
       TUI.new(cascade).run
       0
     rescue TUI::NoTTY => e
@@ -204,7 +204,7 @@ module HColumns
           hcol explore [node|path]   print the ranked column for a node or a real file/dir
                                      (default: src/orders.rb in the demo graph)
           hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;
-                                     r cycles the lens, [ ] move the confidence floor)
+                                     Tab cycles the column's modes, [ ] move the confidence floor)
                                      (a real dir is indexed lazily; default: demo repo root)
           hcol walk sessions         walk the list of agent sessions, descend into any
           hcol walk sessions --live  …with the newest session streaming as it works
@@ -215,7 +215,9 @@ module HColumns
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 
-        in walk, press i to inspect the selected item (data + how it got here + scoring).
+        in walk, each column has tabs (modes) for its node: an auto mode by node type
+        plus alternatives — Tab cycles them, i jumps to the details tab (data + how it
+        got here + confidence math). A ProposedChange opens on a diff facet.
 
         lens flags (on explore/walk):
           --role NAME                #{Lens.names.join(' | ')}

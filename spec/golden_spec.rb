@@ -24,7 +24,7 @@ RSpec.describe "golden column render" do
     graph = HColumns::Providers::InMemoryFixture.build(now: now)
     repo = graph.nodes.find { |n| n.name == "repo/" }.id
     cascade = HColumns::Cascade.new(HColumns::Workspace.new(graph: graph), repo, now: now)
-    cascade.active.cursor = cascade.active_entries.index { |e| e.target.name == "src" }
+    cascade.active.cursor = cascade.active_entries.index { |e| e.label == "src" }
     cascade.into
 
     golden("cascade_repo_src.txt", HColumns::Renderers::CascadeText.new(color: false).render(cascade))

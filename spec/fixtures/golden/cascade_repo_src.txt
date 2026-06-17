@@ -1,10 +1,10 @@
-  repo/  ›  src    [lens: default · floor 0.00]
+  repo/  ›  src    [mode: default]
 
+[default] git details  │ [default] git details 
 ⊃ CONTAINS             │ ⊃ CONTAINS            
   ● README.md          │ ▸ ● inventory.rb      
   ● spec               │   ● orders.rb         
 ▸ ● src                │   ● payments.rb       
 
-  src/inventory.rb  confirmed · conf 1.00 · [structure] · via filesystem
-  directory entry
-  ↑↓/jk move · →/l descend · ←/h back · r lens · [ ] floor · q quit
+  src/inventory.rb  directory entry [structure]; conf 1.00
+  ↑↓/jk move · →/l descend · ←/h back · Tab modes · i details · [ ] floor · q quit

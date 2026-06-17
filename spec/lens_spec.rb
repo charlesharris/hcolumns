@@ -102,11 +102,11 @@ RSpec.describe "live retune via Cascade" do
   let(:root) { HColumns::Providers::InMemoryFixture.orders_id }
   subject(:cascade) { HColumns::Cascade.new(workspace, root, now: now) }
 
-  it "cycle_lens swaps the workspace lens and rebuilds the walked path" do
-    expect(cascade.lens_label).to start_with("default")
-    cascade.cycle_lens
-    expect(workspace.lens.name).to eq(:reviewer)
-    expect(cascade.lens_label).to start_with("reviewer")
+  it "next_tab re-views the active node under its next mode" do
+    expect(cascade.status_label).to start_with("default")
+    cascade.next_tab
+    expect(cascade.active_mode.name).to eq(:git) # SourceFile tabs: default, git, details
+    expect(cascade.status_label).to start_with("git")
   end
 
   it "raising the floor past every edge empties the column; lowering restores it" do

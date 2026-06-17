@@ -16,24 +16,21 @@ RSpec.describe "AgentSession live feed" do
     HColumns::Cascade.new(workspace, AS.session_id, now: now, feed: feed)
   end
 
-  def relations(column)
-    column.groups.map(&:relation)
-  end
-
-  def count(column, relation)
-    column.groups.find { |g| g.relation == relation }&.entries&.size || 0
+  # Section headings of the active panel (relation families for a lens column).
+  def headings(cascade)
+    cascade.active_panel.sections.map(&:heading)
   end
 
   it "starts with only what is known at t0 and reports itself live" do
     cascade = fresh_cascade
     expect(cascade.live?).to be true
-    expect(relations(cascade.active_column)).to contain_exactly(:DRIVEN_BY)
+    expect(headings(cascade)).to contain_exactly("DRIVEN_BY")
   end
 
   it "grows the session column when the agent proposes a change (~1s)" do
     cascade = fresh_cascade
     expect(cascade.tick(1.2)).to be true
-    expect(relations(cascade.active_column)).to include(:PROPOSES)
+    expect(headings(cascade)).to include("PROPOSES")
   end
 
   it "does not repaint when a tick releases nothing (no idle flicker)" do
@@ -42,21 +39,22 @@ RSpec.describe "AgentSession live feed" do
     expect(cascade.tick(1.3)).to be false # nothing new is due between 1.2 and 1.3
   end
 
-  it "grows a frame the walker has already descended into" do
+  it "grows a frame the walker has already descended into (the diff facet)" do
     cascade = fresh_cascade
     cascade.tick(1.2) # PROPOSES now exists
 
-    proposes = cascade.active_entries.index { |e| e.relation == :PROPOSES }
-    cascade.move(proposes)
+    change = cascade.active_entries.index { |e| e.label.include?("diff:") }
+    cascade.move(change)
     cascade.into
-    expect(cascade.active_column.root.type).to eq(:ProposedChange)
+    expect(cascade.active_mode.name).to eq(:diff) # a ProposedChange opens on the diff facet
 
     cascade.tick(2.2) # a couple of files touched so far
-    touched_early = count(cascade.active_column, :TOUCHES)
+    files_early = cascade.active_entries.length
 
     cascade.tick(5.0) # the rest of the diff + the test run land
-    expect(count(cascade.active_column, :TOUCHES)).to be > touched_early
-    expect(relations(cascade.active_column)).to include(:VERIFIED_BY)
+    expect(cascade.active_entries.length).to be > files_early
+    status = cascade.active_panel.sections.flat_map(&:lines).join(" ")
+    expect(status).to include("✓") # the verification status arrived
   end
 
   it "folds to the same projection as the frozen build once fully elapsed" do

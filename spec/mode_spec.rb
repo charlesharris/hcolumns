@@ -17,9 +17,11 @@ RSpec.describe "modes and panels" do
       expect(resolver.auto(orders).name).to eq(modes.first)
     end
 
-    it "gives a ProposedChange a review-first tab set" do
+    it "opens a ProposedChange on the diff facet, with the lens column a tab away" do
       change = HColumns::Node.new(type: :ProposedChange, identity: { scheme: "agent.change", key: "x" })
-      expect(resolver.modes_for(change).first.name).to eq(:reviewer)
+      modes = resolver.modes_for(change).map(&:name)
+      expect(modes.first).to eq(:diff)
+      expect(modes).to include(:reviewer, :details)
     end
 
     it "falls back to a default tab set for unknown types" do
@@ -68,6 +70,27 @@ RSpec.describe "modes and panels" do
       panel = HColumns::Mode[:details].panel(orders, workspace, now: now)
       outgoing = panel.items.find { |i| i.label.start_with?("src/orders.rb —CO_CHANGED_WITH") }
       expect(graph.node(outgoing.target_id)).not_to be_nil # a real node to walk into
+    end
+  end
+
+  describe HColumns::DiffFacet do
+    let(:session_graph) { HColumns::Providers::AgentSession.build(now: now) }
+    let(:session_ws) { HColumns::Workspace.new(graph: session_graph) }
+    let(:change) { session_graph.node(HColumns::Identity.id_for(scheme: "agent.change", key: "s1:c1")) }
+
+    it "presents a ProposedChange as a changeset, not a relation column" do
+      panel = HColumns::Mode[:diff].panel(change, session_ws, now: now)
+
+      labels = panel.items.map(&:label)
+      expect(labels.size).to eq(4)                              # the touched files, as focusable items
+      expect(labels.any? { |l| l.include?("★") }).to be true   # the focus file starred
+      expect(labels.any? { |l| l.include?("+221") }).to be true # churn shown
+
+      lines = panel.sections.flat_map(&:lines).join(" ")
+      expect(lines).to include("file(s) changed")
+      expect(lines).to include("✓")                            # the verification status line
+
+      expect(panel.items.map(&:target_id)).to all(satisfy { |id| session_graph.node(id) }) # each descendable
     end
   end
 end

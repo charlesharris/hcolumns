@@ -1,52 +1,55 @@
 # frozen_string_literal: true
 
 module HColumns
-  # The Miller-column traversal state: a stack of frames, each a built Column plus
-  # a cursor. The rightmost frame is active; its cursor moves freely. Descending
-  # ("into") pushes the selected entry's target column; "back" pops. The frames'
-  # roots are the breadcrumb of the route walked.
+  # The Miller-column traversal state: a stack of frames, each a node viewed under
+  # one of its modes (tabs). The rightmost frame is active; its cursor moves over
+  # the active panel's focusable items. Descending ("into") pushes the selected
+  # item's target; "back" pops. The frames' nodes are the breadcrumb.
   #
-  # Columns are pulled from a `source` (a Workspace) via `column_for`, which may
-  # lazily load a node's neighbors on first request — so navigation logic stays
-  # decoupled from where the graph comes from.
+  # Each frame carries the modes a ModeResolver ranked for its node (the tabs); the
+  # head is the auto mode it opens on. Switching tabs (`next_tab`) re-views the same
+  # node under another mode — cheap (re-score/regroup, no re-pull). Panels are
+  # pulled from a `source` (a Workspace) whose graph may load neighbors lazily.
   class Cascade
-    Frame = Struct.new(:column, :cursor, keyword_init: true)
+    Frame = Struct.new(:node, :modes, :tab, :cursor, :panel, keyword_init: true)
 
     attr_reader :frames, :now
 
-    def initialize(source, root_id, now:, feed: nil)
+    def initialize(source, root_id, now:, feed: nil, resolver: ModeResolver.new, session: nil, floor: 0.0)
       @source = source
       @now = now
       @feed = feed
-      @frames = [Frame.new(column: build(root_id), cursor: 0)]
+      @resolver = resolver
+      @session = session
+      @floor = floor
+      @frames = [make_frame(root_id)]
     end
 
     def active
       @frames.last
     end
 
-    def active_column
-      active.column
+    def active_panel
+      active.panel
     end
 
-    # Entries of the active column in display (ranked) order; the cursor indexes
-    # into this flat list, ignoring the relation-group headers.
+    # Focusable items of the active panel in display order; the cursor indexes this
+    # flat list (relation headers / facet text lines are skipped).
     def active_entries
-      active_column.entries
+      active_panel.items
     end
 
     def selected_entry
       active_entries[active.cursor]
     end
 
-    # The node currently being walked (root of the active column) and the active
-    # lens — what the inspector needs to explain the selected entry.
-    def current_node
-      active_column.root
+    # The mode (tab) the active frame is open on, and the node it shows.
+    def active_mode
+      active.modes[active.tab]
     end
 
-    def lens
-      @source.lens if @source.respond_to?(:lens)
+    def current_node
+      active.node
     end
 
     def depth
@@ -69,28 +72,69 @@ module HColumns
       self
     end
 
-    # Descend into the selected entry's target, pushing its column as the new
-    # active frame. No-op if there is nothing selected.
+    # Descend into the selected item's target, pushing its column as the new active
+    # frame (opened on its own auto mode). No-op if nothing is selected.
     def into
-      entry = selected_entry
-      return self unless entry
+      item = selected_entry
+      return self unless item&.target_id
 
-      @frames.push(Frame.new(column: build(entry.target.id), cursor: 0))
+      @frames.push(make_frame(item.target_id))
       self
     end
 
-    # Pop back toward the root (never past it).
     def back
       @frames.pop if @frames.length > 1
       self
     end
 
+    # --- tabs (modes) -------------------------------------------------------
+
+    # Cycle the active frame to its next/prev tab and re-view the node under it.
+    def next_tab
+      cycle_tab(1)
+    end
+
+    def prev_tab
+      cycle_tab(-1)
+    end
+
+    def cycle_tab(delta)
+      frame = active
+      return self if frame.modes.length <= 1
+
+      frame.tab = (frame.tab + delta) % frame.modes.length
+      build_panel(frame)
+      self
+    end
+
+    # Jump the active frame straight to its details facet (the old `i` inspector,
+    # now just one of the tabs).
+    def show_details
+      idx = active.modes.index { |m| m.name == :details }
+      return self unless idx
+
+      active.tab = idx
+      build_panel(active)
+      self
+    end
+
+    # A global confidence floor applied to every lens-backed panel (the `[`/`]`
+    # retune); facets ignore it. Rebuilds the walked path.
+    def adjust_floor(delta)
+      @floor = (@floor + delta).clamp(0.0, 1.0)
+      rebuild!
+    end
+
+    # A short "default · floor 0.35" label for the status line.
+    def status_label
+      label = active_mode.name.to_s
+      @floor.positive? ? "#{label} · floor #{format('%.2f', @floor)}" : label
+    end
+
     # --- live feed (the agent as event source) ------------------------------
 
-    # Advance the live feed to `elapsed` seconds: release any events whose time has
-    # come into the graph, and rebuild the walked path if anything landed so the
-    # cascade reflects them. Returns true iff the projection grew (the consumer's
-    # signal to repaint). A no-op without a feed (the frozen walk).
+    # Advance the live feed to `elapsed` seconds, rebuilding the walked path if any
+    # events landed. Returns true iff the projection grew (the repaint signal).
     def tick(elapsed)
       return false unless @feed && @feed.release(elapsed, into: @source.graph)
 
@@ -102,64 +146,52 @@ module HColumns
       !@feed.nil?
     end
 
-    # --- live retune (the lens knobs) ---------------------------------------
+    # The panel the active selection would open — shown as a live preview, under
+    # the previewed node's own auto mode.
+    def preview_panel
+      item = selected_entry
+      return nil unless item&.target_id
 
-    # Cycle to the next lens preset and rebuild the walked path under it.
-    def cycle_lens
-      return self unless retunable?
-
-      @source.lens = Lens.cycle(@source.lens.name)
-      rebuild!
+      node = @source.graph.node(item.target_id)
+      node && build_panel_for(node, @resolver.auto(node, session: @session))
     end
 
-    # Nudge the confidence floor (the `[`/`]` keys), clamped to [0,1].
-    def adjust_floor(delta)
-      return self unless retunable?
-
-      floor = (@source.lens.tuner.floor + delta).clamp(0.0, 1.0)
-      @source.lens = @source.lens.with_floor(floor)
-      rebuild!
-    end
-
-    # A short "explorer · floor 0.35" label for the status line, or nil if the
-    # source has no lens (e.g. a bare graph in a test).
-    def lens_label
-      return nil unless retunable?
-
-      "#{@source.lens.name} · floor #{format('%.2f', @source.lens.tuner.floor)}"
-    end
-
-    # Rebuild every frame's column from source (after a lens change), preserving
-    # the walked path and clamping each cursor to the new, possibly shorter list.
-    def rebuild!
-      @frames = @frames.map do |frame|
-        column = build(frame.column.root.id)
-        last = [column.entries.length - 1, 0].max
-        Frame.new(column: column, cursor: frame.cursor.clamp(0, last))
-      end
-      self
-    end
-
-    # The column the active selection *would* open — shown as a live preview to
-    # the right of the cascade, not (yet) part of the walked path.
-    def preview_column
-      entry = selected_entry
-      entry && build(entry.target.id)
-    end
-
-    # The breadcrumb: the root node at each level of the walked path.
+    # The breadcrumb: the node at each level of the walked path.
     def trail
-      @frames.map { |f| f.column.root }
+      @frames.map(&:node)
+    end
+
+    # Rebuild every frame's panel from source (after a retune / feed tick),
+    # preserving the walked path and clamping each cursor to the new item list.
+    def rebuild!
+      @frames.each { |frame| build_panel(frame) }
+      self
     end
 
     private
 
-    def retunable?
-      @source.respond_to?(:lens) && @source.respond_to?(:lens=)
+    def make_frame(node_id)
+      node = @source.graph.node(node_id)
+      frame = Frame.new(node: node, modes: @resolver.modes_for(node, session: @session), tab: 0, cursor: 0)
+      build_panel(frame)
+      frame
     end
 
-    def build(node_id)
-      @source.column_for(node_id, now: @now)
+    def build_panel(frame)
+      frame.panel = build_panel_for(frame.node, frame.modes[frame.tab])
+      last = [frame.panel.items.length - 1, 0].max
+      frame.cursor = frame.cursor.to_i.clamp(0, last)
+      frame.panel
+    end
+
+    def build_panel_for(node, mode)
+      mode = floored(mode) if @floor.positive? && mode.respond_to?(:lens)
+      mode.panel(node, @source, now: @now)
+    end
+
+    # A copy of a lens mode with the confidence floor applied (the live retune).
+    def floored(mode)
+      LensMode.new(name: mode.name, lens: mode.lens.with_floor(@floor))
     end
   end
 end

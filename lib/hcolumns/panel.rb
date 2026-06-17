@@ -37,7 +37,7 @@ module HColumns
   # fields (maturity/confidence/reason) let the renderer draw the same glyph+bar a
   # column does; `detail` is extra lines a facet attaches (e.g. the confidence
   # math behind an edge), shown when the renderer wants depth.
-  PanelItem = Struct.new(:label, :target_id, :maturity, :confidence, :reason, :detail, keyword_init: true) do
+  PanelItem = Struct.new(:label, :target_id, :maturity, :confidence, :reason, :detail, :glyph, keyword_init: true) do
     def detail
       self[:detail] || []
     end

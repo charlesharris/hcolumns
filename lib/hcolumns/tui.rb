@@ -13,13 +13,12 @@ module HColumns
     POLL_INTERVAL = 0.1 # seconds between live-feed ticks while idle
 
     def initialize(cascade, renderer: Renderers::CascadeText.new, out: $stdout, input: $stdin,
-                   clock: -> { Time.now }, detail: Renderers::Detail.new)
+                   clock: -> { Time.now })
       @cascade = cascade
       @renderer = renderer
       @out = out
       @input = input
       @clock = clock
-      @detail = detail
     end
 
     def run
@@ -82,30 +81,12 @@ module HColumns
       when :down, "j" then @cascade.down
       when :right, "l", :enter then @cascade.into
       when :left, "h" then @cascade.back
-      when "r" then @cascade.cycle_lens
+      when "r", :tab then @cascade.next_tab
+      when "i" then @cascade.show_details
       when "[" then @cascade.adjust_floor(-0.05)
       when "]" then @cascade.adjust_floor(0.05)
-      when "i" then inspect_selected
       when "q", :ctrl_c, :escape then :quit
       end
-    end
-
-    # Full-screen inspector for the selected entry: all the data behind it and the
-    # confidence math. Blocks (the live feed pauses) until a key dismisses it; the
-    # caller then repaints the cascade. No-op if nothing is selected.
-    def inspect_selected
-      entry = @cascade.selected_entry
-      return unless entry
-
-      report = @detail.entry(entry, from: @cascade.current_node, lens: @cascade.lens, now: @cascade.now)
-      rows, = terminal_size
-      body = report.split("\n").first(rows - 2).join("\n")
-      @out.print("\e[2J\e[H")
-      @out.print(body.gsub("\n", "\r\n"))
-      @out.print("\r\n\r\n  — any key to return —")
-      @out.flush
-      read_key
-      nil
     end
 
     def paint
@@ -135,6 +116,7 @@ module HColumns
       case char
       when "\e" then read_escape
       when "\r", "\n" then :enter
+      when "\t" then :tab
       else char
       end
     rescue Errno::EINTR
