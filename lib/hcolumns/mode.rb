@@ -151,9 +151,10 @@ module HColumns
       touches = out.select { |e| e.type == :TOUCHES }
       focus = out.select { |e| e.type == :FOCUSES_ON }.map(&:target_id)
       verified = out.find { |e| e.type == :VERIFIED_BY }
+      hunks = node.properties[:hunks] || {}
 
       header = PanelSection.new(lines: ["#{touches.size} file(s) changed", ""])
-      files = PanelSection.new(items: touches.map { |e| file_item(e, graph, focus, now) })
+      files = PanelSection.new(items: touches.map { |e| file_item(e, graph, focus, now, hunks) })
       status = verified ? "✓ #{name_of(graph.node(verified.target_id))}" : "• not verified"
       footer = PanelSection.new(lines: ["", status])
 
@@ -162,12 +163,23 @@ module HColumns
 
     private
 
-    def file_item(edge, graph, focus, now)
+    def file_item(edge, graph, focus, now, hunks)
       file = graph.node(edge.target_id)
+      path = file ? file.name.to_s : "?"
       churn = churn_of(edge)
-      star = focus.include?(edge.target_id) ? "  ★" : ""
+      starred = focus.include?(edge.target_id)
+      star = starred ? "  ★" : ""
       PanelItem.new(label: "#{basename(file)}#{churn}#{star}", target_id: edge.target_id, glyph: "~",
-                    maturity: edge.maturity(now: now), confidence: edge.confidence(now: now), reason: churn.strip)
+                    maturity: edge.maturity(now: now), confidence: edge.confidence(now: now),
+                    reason: churn.strip, detail: file_detail(path, churn, starred, hunks))
+    end
+
+    # The per-file view shown in the preview pane: a header, then the hunk if the
+    # change carries one (real content lands here once an agent emits real diffs).
+    def file_detail(path, churn, starred, hunks)
+      header = "#{path}#{churn}#{starred ? '   ★ focus' : ''}"
+      body = hunks[path] || ["(no hunk recorded for this change)"]
+      [header, ""] + body
     end
 
     def churn_of(edge)

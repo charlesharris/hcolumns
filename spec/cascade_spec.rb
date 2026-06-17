@@ -64,6 +64,15 @@ RSpec.describe HColumns::Cascade do
     expect(cascade.depth).to eq(1) # preview does not push a frame
   end
 
+  it "previews a leaf as its details facet rather than an empty pane" do
+    nav_to("src")
+    cascade.into
+    nav_to("src/payments.rb") # a node with no outgoing relations
+    preview = cascade.preview_panel
+    expect(preview.empty?).to be false
+    expect(preview.sections.map(&:heading)).to include("NODE")
+  end
+
   it "treats a node with no outgoing relations as a leaf" do
     nav_to("src")
     cascade.into

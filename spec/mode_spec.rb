@@ -92,5 +92,12 @@ RSpec.describe "modes and panels" do
 
       expect(panel.items.map(&:target_id)).to all(satisfy { |id| session_graph.node(id) }) # each descendable
     end
+
+    it "carries each file's hunk as item detail (what the preview pane shows)" do
+      panel = HColumns::Mode[:diff].panel(change, session_ws, now: now)
+      hunked = panel.items.find { |i| i.detail.join("\n").include?("module AgentSession") }
+      expect(hunked).not_to be_nil
+      expect(hunked.detail.first).to include("agent_session.rb") # a header line, then the hunk
+    end
   end
 end

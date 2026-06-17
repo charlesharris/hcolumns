@@ -154,14 +154,23 @@ module HColumns
       !@feed.nil?
     end
 
-    # The panel the active selection would open — shown as a live preview, under
-    # the previewed node's own auto mode.
+    # The far-right preview pane: a richer look at the *selected item*. If the item
+    # carries a detail (a diff facet's hunk, a details facet's edge breakdown), show
+    # that; otherwise preview the target under its auto mode, falling back to the
+    # details facet so a leaf node previews as something useful rather than empty.
     def preview_panel
       item = selected_entry
-      return nil unless item&.target_id
+      return nil unless item
 
-      node = @source.graph.node(item.target_id)
-      node && build_panel_for(node, @resolver.auto(node, session: @session))
+      detail = item.detail
+      target = item.target_id && @source.graph.node(item.target_id)
+      if detail && !detail.empty?
+        return Panel.new(node: target, mode: :preview, sections: [PanelSection.new(lines: detail)])
+      end
+      return nil unless target
+
+      panel = build_panel_for(target, @resolver.auto(target, session: @session))
+      panel.empty? ? build_panel_for(target, Mode[:details]) : panel
     end
 
     # The breadcrumb: the node at each level of the walked path.

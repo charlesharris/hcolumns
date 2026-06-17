@@ -43,7 +43,31 @@ module HColumns
                   ["spec/providers/agent_session_spec.rb", "+38", false]],
           test: ["rspec — 84 examples", :behavior], log: "0 failures (0.9s)",
           # the agent's workflow phase over the timeline — drives the live modes
-          phases: [[0.0, :editing], [4.0, :testing], [5.5, :reviewing]] },
+          phases: [[0.0, :editing], [4.0, :testing], [5.5, :reviewing]],
+          # representative hunks, shown in the preview pane (the diff body lives on
+          # the change node; a real agent/diff provider would fill these for real)
+          hunks: {
+            "lib/hcolumns/providers/agent_session.rb" => [
+              "+    module AgentSession",
+              "+      def session_events(spec, now:)",
+              "+        # nodes + timed observations for one session",
+              "+      end",
+              "+    end"
+            ],
+            "lib/hcolumns/evidence.rb" => [
+              "       behavior:   { ... half_life_days: 14.0 },",
+              "+      agent:      { reliability: 0.7, half_life_days: 7.0 },",
+              "       history:    { ... half_life_days: 90.0 },"
+            ],
+            "lib/hcolumns.rb" => [
+              "+    require_relative \"hcolumns/providers/agent_session\""
+            ],
+            "spec/providers/agent_session_spec.rb" => [
+              "+    RSpec.describe HColumns::Providers::AgentSession do",
+              "+      # route + confidence specs",
+              "+    end"
+            ]
+          } },
         { key: "s2", days_ago: 2, task: "fix TUI staircase in raw mode",
           change: "diff: emit CR+LF on paint",
           files: [["lib/hcolumns/tui.rb", "+6", true]],
@@ -85,7 +109,8 @@ module HColumns
         end
         session = session_with.(phases.first.last)
         agent   = node.(:Agent, { scheme: "agent", key: "claude" }, "claude")
-        change  = node.(:ProposedChange, { scheme: "agent.change", key: "#{spec[:key]}:c1" }, spec[:change])
+        change  = Node.new(type: :ProposedChange, identity: { scheme: "agent.change", key: "#{spec[:key]}:c1" },
+                           properties: { name: spec[:change], hunks: spec[:hunks] || {} })
         files   = spec[:files].map { |path, churn, focus| [node.(:SourceFile, { scheme: "fs.path", key: "local:/repo/#{path}" }, path), churn, focus] }
         test    = node.(:TestRun, { scheme: "agent.test", key: "#{spec[:key]}:t1" }, spec[:test][0])
         log     = node.(:LogLine, { scheme: "agent.log", key: "#{spec[:key]}:l1" }, spec[:log])
