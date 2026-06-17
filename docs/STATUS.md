@@ -1,14 +1,15 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 79 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 88 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed on `main`** (working tree clean). Layers 5–7, the lens refactor, the
-> confidence rework, adaptive width, `install.sh`, and the new agent-session prototype were
-> committed 2026-06-17 as a clean per-layer sequence. The open thread now is the **live/push fork**
-> the agent provider surfaces — see [§8](#8-next-up--open-threads).
+> ✅ **All work is committed on `main`** (working tree clean). The **live/push fork is resolved and
+> built**: Charris chose path (a) — an append-only event log under the read-model — and option B —
+> the column grows live as the agent works. `hcol walk session --live` is real. See
+> [§8](#8-next-up--open-threads) for what's left (persistence/JSONL, undo/`:retract`, a real async
+> producer).
 
 ---
 
@@ -56,7 +57,8 @@ source is just a new provider that appends observations.
 | `0afb16b` | fix — **confidence model** reworked to two modes. **Deterministic** evidence (filesystem containment, AST defs, resolved requires) is verifiable ground truth → confidence **exactly 1.0**, `confirmed` maturity, no decay/mix. **Probabilistic** evidence (history/inference/convention/behavior/human) folds via **noisy-OR over per-occurrence reliability** — accrues with evidence, decays with age. Replaces the old sum-then-squash where a lone fact read only 0.63. Added a `convention` kind; reclassified the naming-rule PAIR off `structure` (it's a heuristic). Goldens regenerated. |
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
-| `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. **Still pull/frozen — no live push.** |
+| `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| `40aa07f` | **9** — **live event log (path a + option B)**: `EventLog` = append-only source of truth (seq/version/since/replay); `Graph` is a projection folded from it, and is **log-backed** (observe/add_node record when a log is attached, `apply_*` folds without re-recording, so the 5 pull providers are unchanged). `AgentSession` is one timed script: `build` folds it whole (frozen), `Feed` releases events as their time arrives (live). `Cascade#tick(elapsed)` releases due events + rebuilds; the `TUI` live loop waits on `IO.select` and repaints only when the column grew (no idle flicker; non-live path byte-identical). `hcol walk session --live` — the cascade grows under the walker (pty-verified). Producer is a wall-clock-polled script (single-writer, deterministic), not a thread. `:retract` event kind designed-in but deferred. |
 
 ## 4. File map (`lib/hcolumns/`)
 
@@ -69,7 +71,10 @@ observation.rb     the primitive providers append; reliability(now,mix): 1.0 if 
 node.rb            graph node (type, identity, properties)
 edge.rb            DERIVED fold: confidence = noisy-OR 1−∏(1−rᵢ)^weightᵢ (a deterministic obs pins it to
                    1.0; probabilistic accrues), recency, maturity (deterministic|human ⇒ confirmed)
-graph.rb           nodes + edge projection; observe() folds; edges_from/into
+graph.rb           nodes + edge projection; observe()/add_node() record to an optional log then
+                   apply_*(); apply_* fold without recording (the replay path); edges_from/into
+event_log.rb       append-only source of truth: append/version/since/fold/project(replay). Graph is
+                   a projection folded from it; :node + :observe events (:retract designed-in, deferred)
 tuner.rb           evidence math: score = w_conf·confidence + w_recency·recency; floor + evidence_mix
 lens.rb            base engine: tuner + relation_weights + optional scope; score/visible?/admits?/
                    with_floor; name→class registry (preset/cycle). Base IS the neutral :default lens
@@ -81,11 +86,15 @@ lenses/            one file per lens type (subclass overrides declarative class-
 column.rb          ColumnEntry / ColumnGroup / Column   (entry score/confidence come from the lens)
 column_builder.rb  outgoing edges -> lens scope+floor filter -> grouped by relation -> total order
 workspace.rb       graph + providers + a swappable lens; column_for() expands lazily; the pull seam
-cascade.rb         Miller traversal: frames, cursor, into/back, preview, trail; cycle_lens/adjust_floor
+cascade.rb         Miller traversal: frames, cursor, into/back, preview, trail; cycle_lens/adjust_floor;
+                   tick(elapsed) advances an optional live feed + rebuilds the walked path; live?
+tui.rb (live)      live loop waits on IO.select(POLL); key → act+repaint, timeout → tick + repaint only
+                   if the column grew (no flicker; settled session waits on input; non-live unchanged)
 providers/
   in_memory_fixture.rb  demo coding-workspace graph (golden substrate)
-  agent_session.rb      frozen agent-session graph: Session→ProposedChange→files/TestRun→LogLine;
-                        the guiding-star route, rendered through the unchanged pipeline (no push yet)
+  agent_session.rb      the guiding-star session as one timed script (Session→ProposedChange→files/
+                        TestRun→LogLine). build()=frozen fold; Feed.release(elapsed,into:)=live release
+                        into an EventLog, folded as events' time arrives (drives `walk session --live`)
   filesystem.rb         CONTAINS, one dir level at a time; skips hidden/.git/node_modules/...
   naming_rules.rb       source<->test PAIR by string transform (heuristic; misses flat spec/ dirs)
   git.rb                two-faced: file → CO_CHANGED_WITH/CHANGED_BY; repo root → HAS_BRANCH/HEAD,
@@ -175,30 +184,32 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 5–8 are committed; the working tree is clean. The agent-session fixture (layer 8) proves
-the route walks as a cascade. **The live thread now:**
+Layers 5–9 are committed; tree clean. **The live/push fork is resolved (path a: event log under the
+read-model) and built (option B: column grows live).** `hcol walk session --live` works. What's left,
+roughly in dependency order:
 
-- **THE FORK — live/push vs pull-snapshot (load-bearing; decide with Charris first).** The agent
-  session is the first *temporal/push* source. Every existing provider is pull (`expand` once,
-  `@expanded`-guarded, static state). "Session reflected in the UI, live" means events append *after*
-  a node was expanded and columns must grow — which **breaks the once-per-node cache**. That's
-  exactly where event-sourcing (append + re-fold, hugel3 pattern) earns its place. The frozen
-  fixture deliberately defers this. Two paths to weigh: (a) an append-driven event log under the
-  read-model (the architecture-decisions "slot-in" seam); (b) re-pull/invalidate a node on demand
-  without a log. Decide via the concrete use case (a session that keeps touching files mid-walk)
-  before building — see the project memory on earning architecture through use cases.
-- **`agent` evidence kind (0.7, ~7d) — confirm the numbers.** Added in layer 8; a judgement call.
-  Open sub-question: an agent *action* is certain (it happened — event-log territory) while its
-  *relevance claim* is uncertain. Layer 8 maps verifiable actions to `structure` and assertions to
-  `agent`; revisit if the action/claim split wants to be first-class.
-- **Real agent provider (vs the frozen fixture)** — a pull `AgentSession` provider with
-  `recognizes?(Session/ProposedChange)` + `expand`, reading a real session store. Natural follow-on
-  once the fork is decided (the store *is* the proto event log).
-- **Scoping lens in anger** — the `only:`/`hide:` scope is built/tested but no preset uses it; a
-  "session-only" lens (hide code-graph noise) is now a concrete want for the agent view.
-- **Tune lens preset constants** against more real repos; consider per-lens goldens.
-- **Lens label in the static renderer** — `hcol explore --role X` doesn't show the active lens.
-- **Other-language code providers** — the ruby_code pattern generalizes (JS/Python sibling).
+- **Persistence — JSONL on disk.** The event log is in-memory; the hügel framing wants the mound to
+  survive restarts (the one "upward revision from in-memory only" in the architecture memo). An
+  append-only log makes this nearly mechanical: serialize each event to a line, replay on load.
+  This is the natural immediate next step now that the log exists.
+- **Undo / `:retract`.** The third event kind is designed-in but unimplemented — append a counter-
+  event referencing an observation's seq, recompute just that edge (local; the edge keeps its
+  observation list). This is the *other* feature that justified the log (agent reject/undo); it
+  also unlocks frozen-snapshot-at-seq-K (fold events `seq ≤ K`).
+- **Real async producer (vs the polled script).** The live demo's producer is a wall-clock-polled
+  `Feed`; a real agent appends asynchronously (a thread/socket/file-tail writing to the `EventLog`).
+  Swap is localized to the producer side; the consumer (TUI `tick`/`IO.select`) already handles
+  "the log grew." Will want thread-safety on `EventLog#append` then.
+- **Providers feeding the log.** The pull providers (filesystem/git/ruby) don't yet record into a
+  log — attach a log to their graph (the 2b seam, already in `Graph`) so a real session's *code*
+  context also participates in replay/undo. Not needed for the session demo; do it when undo wants it.
+- **`agent` evidence kind (0.7, ~7d) — confirm the numbers**, and whether the action-is-certain /
+  claim-is-uncertain split should be first-class (today: verifiable actions → `structure`,
+  assertions → `agent`).
+- **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
+  a session lens that dims code-graph noise is now a concrete want.
+- **Tune lens preset constants**; **lens label in the static renderer**; **other-language code
+  providers** (the ruby_code pattern generalizes) — all still open, lower priority.
 
 ## 9. Roadmap beyond (not committed)
 
