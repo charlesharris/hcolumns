@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 88 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 94 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -58,6 +58,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| `35a0a41` | **10** — **sessions index + contextual inspector**: `sessions_graph(now:)` adds a `Sessions` index node with `HAS_SESSION` to every session (one `session_events` builder drives the live script, the frozen `build`, and the index); `hcol explore/walk sessions`, plus `--live` (the newest session streams as you descend, `live_key:` leaves it a shell). `Renderers::Detail` = the inspector: node identity/props + the edge(s) relating it + the confidence math to each observation (reliability = base × decay × lens-mix, noisy-OR vs deterministic pin) + the lens score. TUI `i` inspects the selected entry; `hcol inspect <node\|path>` inspects a node in the round (all in/out edges). Session list is alphabetical, not newest-first (recency doesn't separate non-decaying structure edges) — noted follow-up. |
 | `40aa07f` | **9** — **live event log (path a + option B)**: `EventLog` = append-only source of truth (seq/version/since/replay); `Graph` is a projection folded from it, and is **log-backed** (observe/add_node record when a log is attached, `apply_*` folds without re-recording, so the 5 pull providers are unchanged). `AgentSession` is one timed script: `build` folds it whole (frozen), `Feed` releases events as their time arrives (live). `Cascade#tick(elapsed)` releases due events + rebuilds; the `TUI` live loop waits on `IO.select` and repaints only when the column grew (no idle flicker; non-live path byte-identical). `hcol walk session --live` — the cascade grows under the walker (pty-verified). Producer is a wall-clock-polled script (single-writer, deterministic), not a thread. `:retract` event kind designed-in but deferred. |
 
 ## 4. File map (`lib/hcolumns/`)
@@ -92,9 +93,10 @@ tui.rb (live)      live loop waits on IO.select(POLL); key → act+repaint, time
                    if the column grew (no flicker; settled session waits on input; non-live unchanged)
 providers/
   in_memory_fixture.rb  demo coding-workspace graph (golden substrate)
-  agent_session.rb      the guiding-star session as one timed script (Session→ProposedChange→files/
-                        TestRun→LogLine). build()=frozen fold; Feed.release(elapsed,into:)=live release
-                        into an EventLog, folded as events' time arrives (drives `walk session --live`)
+  agent_session.rb      the guiding-star sessions. SESSIONS specs → session_events (one timed builder);
+                        build()=frozen single session; Feed.release(elapsed,into:)=live release into an
+                        EventLog (drives `walk session --live`); sessions_graph(now:,live_key:)=a Sessions
+                        index node + HAS_SESSION per session (drives `walk sessions [--live]`)
   filesystem.rb         CONTAINS, one dir level at a time; skips hidden/.git/node_modules/...
   naming_rules.rb       source<->test PAIR by string transform (heuristic; misses flat spec/ dirs)
   git.rb                two-faced: file → CO_CHANGED_WITH/CHANGED_BY; repo root → HAS_BRANCH/HEAD,
@@ -104,6 +106,8 @@ providers/
                         (MAX_INDEX_FILES=2000) backs cross-file REFERENCES + DEFINED_IN back-edge
 renderers/
   text.rb               single column (maturity glyph, confidence bar, rank reason); fixed width
+  detail.rb             the inspector: node identity/props + relating edge(s) + confidence math per
+                        observation (base×decay×mix, noisy-OR/pin) + lens score. entry() (TUI i) / node() (CLI)
   cascade_text.rb       side-by-side columns; viewport-aware render(width:,height:): clip to rightmost
                         fitting columns, grow to fill, truncate chrome, vertical clamp + overflow marker
 tui.rb                  interactive driver (raw mode, arrows/hjkl, r/[/], q/Esc/Ctrl-C; CR+LF on paint);
@@ -206,6 +210,13 @@ roughly in dependency order:
 - **`agent` evidence kind (0.7, ~7d) — confirm the numbers**, and whether the action-is-certain /
   claim-is-uncertain split should be first-class (today: verifiable actions → `structure`,
   assertions → `agent`).
+- **Newest-first session ordering.** The sessions index is alphabetical: `recency` can't separate
+  the `HAS_SESSION` edges because `structure` doesn't decay (recency stays 1.0). Wants a recency
+  notion driven by `observed_at` age independent of the decay curve (touches the tuner/Edge#recency);
+  adjacent to the "decaying deterministic confidence" knob already in §9.
+- **Inspector depth.** `Renderers::Detail` covers a node + its edges + confidence math. Could grow:
+  the full event/seq history behind an edge (now that the log carries it), `[`/`]`-style live retune
+  reflected in the open inspector, or a side-panel variant instead of the full-screen page.
 - **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
   a session lens that dims code-graph noise is now a concrete want.
 - **Tune lens preset constants**; **lens label in the static renderer**; **other-language code
