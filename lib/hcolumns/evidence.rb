@@ -22,6 +22,7 @@ module HColumns
       human:      { deterministic: false, reliability: 0.95, half_life_days: nil },  # a person's judgement — does not decay
       convention: { deterministic: false, reliability: 0.55, half_life_days: nil },  # follows a naming/layout convention (heuristic)
       behavior:   { deterministic: false, reliability: 0.6,  half_life_days: 14.0 }, # runtime/telemetry signal — ages fast
+      agent:      { deterministic: false, reliability: 0.7,  half_life_days: 7.0 },  # an LLM agent's deliberate assertion — ages as the session moves on
       history:    { deterministic: false, reliability: 0.5,  half_life_days: 90.0 }, # git co-change, authorship — accrues
       inference:  { deterministic: false, reliability: 0.3,  half_life_days: 30.0 }  # a guess (e.g. an LLM)
     }.freeze

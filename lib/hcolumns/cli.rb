@@ -97,6 +97,8 @@ module HColumns
     # filesystem/naming providers (the selected node is that path); otherwise the
     # arg selects into the demo graph.
     def target_for(arg, fixture_default:)
+      return [session_workspace, Providers::AgentSession.session_id] if arg == "session"
+
       path = arg && File.expand_path(arg)
       if path && File.exist?(path)
         providers = [Providers::Filesystem.new, Providers::NamingRules.new]
@@ -114,6 +116,12 @@ module HColumns
 
     def fixture_workspace
       @fixture_workspace ||= Workspace.new(graph: Providers::InMemoryFixture.build(now: now), lens: lens)
+    end
+
+    # The frozen agent-session demo (the guiding-star substrate). Selected by the
+    # literal arg `session`: `hcol explore session` / `hcol walk session`.
+    def session_workspace
+      @session_workspace ||= Workspace.new(graph: Providers::AgentSession.build(now: now), lens: lens)
     end
 
     # Resolve a demo selector to a node id: exact id, exact name, then substring.
@@ -140,6 +148,8 @@ module HColumns
           hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;
                                      r cycles the lens, [ ] move the confidence floor)
                                      (a real dir is indexed lazily; default: demo repo root)
+          hcol explore session       the agent-session route (Task→change→files→test→log)
+          hcol walk session          walk that route interactively
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 
