@@ -55,6 +55,16 @@ RSpec.describe HColumns::Renderers::CascadeText do
     expect(render(width: 80, height: 8)).to include("↓ +")
   end
 
+  it "renders the selected item's detail full-width in the bottom dock" do
+    change_id = HColumns::Identity.id_for(scheme: "agent.change", key: "s1:c1")
+    session = HColumns::Providers::AgentSession.build(now: now)
+    cascade = HColumns::Cascade.new(HColumns::Workspace.new(graph: session), change_id, now: now)
+
+    out = renderer.render(cascade, width: 100, height: 24) # opens on the diff facet, cursor on a file
+    expect(out).to match(/─{90,}/)                # the dock separator spans the width
+    expect(out).to include("module AgentSession") # the hunk body, not clipped to a column
+  end
+
   it "renders unconstrained (no width/height) as before — the golden form" do
     out = render
     expect(out).to include("repo/")

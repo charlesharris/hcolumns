@@ -12,5 +12,6 @@
                        │                        │   · src/orders.rb —CO…
                        │                        │ what it relates to — …
 
-  src/inventory.rb  directory entry [structure]; conf 1.00
+────────
+  src/inventory.rb   directory entry [structure]; conf 1.00
   ↑↓/jk move · →/l descend · ←/h back · Tab modes · i details · [ ] floor · q quit

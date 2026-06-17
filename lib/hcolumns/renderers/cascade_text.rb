@@ -34,15 +34,17 @@ module HColumns
       # clipping — the deterministic golden form. With a width, it shows the
       # rightmost columns that fit (the breadcrumb keeps the whole trail) and grows
       # each column to use the available room; with a height it clamps vertically.
+      DOCK_MAX = 12 # most rows the bottom dock takes (a long hunk scrolls/clips)
+
       def render(cascade, width: nil, height: nil)
         visible, clipped = clip_to_width(build_panels(cascade), width)
         col_width = column_width(visible.length, width)
 
         crumb = truncate(breadcrumb(cascade, clipped: clipped), width)
-        info  = detail(cascade).split("\n").map { |line| truncate(line, width) }
-        body  = columns(visible, col_width, body_rows(height, info.length))
+        dock  = dock_lines(cascade, width, dock_cap(height))
+        body  = columns(visible, col_width, body_rows(height, dock.length))
 
-        [crumb, "", *body, "", *info, truncate(hint, width)].join("\n")
+        [crumb, "", *body, "", *dock, truncate(hint, width)].join("\n")
       end
 
       private
@@ -83,11 +85,18 @@ module HColumns
         [[usable / count, 1].max, MAX_COL_WIDTH].min
       end
 
-      def body_rows(height, info_lines)
+      def body_rows(height, dock_count)
         return nil unless height
 
-        # chrome = breadcrumb + blank + blank + detail lines + hint
-        [height - (4 + info_lines), 1].max
+        # chrome = breadcrumb + blank + blank + hint (4) + the dock
+        [height - 4 - dock_count, 1].max
+      end
+
+      # How many rows the dock may take, leaving the cascade body at least one row.
+      def dock_cap(height)
+        return nil unless height
+
+        [[height - 5, 1].max, DOCK_MAX].min
       end
 
       # A panel renders to an array of {t:, s:} cells (one per visual row). Sections
@@ -161,13 +170,32 @@ module HColumns
         "#{str[0, width - 1]}…"
       end
 
-      def detail(cascade)
-        item = cascade.selected_entry
-        return "  (nothing selected)" unless item
+      # The bottom dock: a full-width detail panel for the selected item — its hunk
+      # (diff facet) or edge breakdown (details facet) gets the whole terminal width,
+      # not a narrow column. Falls back to a one-line summary. A separator sets it
+      # off from the cascade; clamped to `max_lines` with an overflow marker.
+      def dock_lines(cascade, width, max_lines)
+        sep = width ? "─" * width : "────────"
+        lines = [sep, *dock_body(cascade)]
+        lines = clamp(lines, max_lines) if max_lines
+        lines.map { |line| truncate(line, width) }
+      end
 
-        line = "  #{item.label}"
-        line += "  #{item.reason}" if item.reason && !item.reason.empty?
-        line
+      def dock_body(cascade)
+        item = cascade.selected_entry
+        return ["  (nothing selected)"] unless item
+
+        detail = cascade.selected_detail
+        return detail.map { |line| "  #{line}" } if detail
+
+        reason = item.reason && !item.reason.empty? ? "   #{item.reason}" : ""
+        ["  #{item.label}#{reason}"]
+      end
+
+      def clamp(lines, max)
+        return lines if lines.length <= max
+
+        lines.first(max - 1) + ["  ↓ +#{lines.length - (max - 1)}"]
       end
 
       def hint
