@@ -12,7 +12,7 @@ module HColumns
   class Cascade
     Frame = Struct.new(:column, :cursor, keyword_init: true)
 
-    attr_reader :frames
+    attr_reader :frames, :now
 
     def initialize(source, root_id, now:, feed: nil)
       @source = source
@@ -37,6 +37,16 @@ module HColumns
 
     def selected_entry
       active_entries[active.cursor]
+    end
+
+    # The node currently being walked (root of the active column) and the active
+    # lens — what the inspector needs to explain the selected entry.
+    def current_node
+      active_column.root
+    end
+
+    def lens
+      @source.lens if @source.respond_to?(:lens)
     end
 
     def depth

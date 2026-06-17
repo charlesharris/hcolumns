@@ -2,97 +2,124 @@
 
 module HColumns
   module Providers
-    # A hand-authored *agent session* — the guiding-star substrate.
+    # Hand-authored *agent sessions* — the guiding-star substrate.
     #
     # An LLM coding agent's work produces a **route** —
     #
     #   Task → ProposedChange → the files it touches → a TestRun → a LogLine
     #
-    # which we claim is intrinsically a column-walk (vs. a dashboard's flattened
-    # overview). The session is defined once as an ordered `script` of events on a
-    # timeline (`after:` seconds from the start). Two ways to consume it:
+    # which we claim is intrinsically a column-walk. Each session is described by a
+    # small spec (SESSIONS); `session_events` turns one into an ordered, timed list
+    # of events (nodes + observations on a `after:` timeline). Those events are
+    # consumed three ways:
     #
-    #   * `build(now:)`  — fold the whole script at once → a frozen Graph
-    #     (`hcol explore/walk session`). The route, already grown.
-    #   * `Feed`         — release events as their `after` time arrives, appending
-    #     to an EventLog and folding into a graph as they land. Drives the *live*
-    #     walk (`hcol walk session --live`): the column grows as the agent "works",
-    #     which is the guiding star — the session reflected in the UI as it happens.
+    #   * `build(now:)`         — fold the live session whole → a frozen Graph
+    #                             (`hcol explore/walk session`).
+    #   * `Feed`                — release events as their time arrives → the live
+    #                             walk grows under you (`hcol walk session --live`).
+    #   * `sessions_graph(now:)`— an index node listing every session, each
+    #                             descendable into its route (`hcol walk sessions`).
+    #                             Pass `live_key:` to leave one session a shell whose
+    #                             route a Feed streams (`hcol walk sessions --live`).
     #
     # Two evidence modes show up deliberately: the diff *really* touches these files
     # / the agent *really* ran the tests → `structure`, confidence 1.0; "this change
-    # addresses the task", "this file is the focus" are the agent's *assertions* →
+    # addresses the task" / "this file is the focus" are the agent's *assertions* →
     # the `agent` kind (0.7, ages ~7d). Touched files carry real `fs.path` ids, so
     # in a live workspace they unify with the filesystem/git/ruby nodes.
     module AgentSession
       module_function
 
       SESSION_KEY = { scheme: "agent.session", key: "s1" }.freeze
+      INDEX_KEY = { scheme: "agent.sessions", key: "local" }.freeze
+
+      # The live demo session is the first; older ones fill out the index list.
+      SESSIONS = [
+        { key: "s1", days_ago: 0, task: "add agent provider",
+          change: "diff: agent_session provider (+evidence kind)",
+          files: [["lib/hcolumns/providers/agent_session.rb", "+221", true],
+                  ["lib/hcolumns/evidence.rb", "+1", false],
+                  ["lib/hcolumns.rb", "+1", false],
+                  ["spec/providers/agent_session_spec.rb", "+38", false]],
+          test: ["rspec — 84 examples", :behavior], log: "0 failures (0.9s)" },
+        { key: "s2", days_ago: 2, task: "fix TUI staircase in raw mode",
+          change: "diff: emit CR+LF on paint",
+          files: [["lib/hcolumns/tui.rb", "+6", true]],
+          test: ["rspec — 74 examples", :behavior], log: "0 failures (0.8s)" },
+        { key: "s3", days_ago: 5, task: "rework confidence into two modes",
+          change: "diff: deterministic vs probabilistic",
+          files: [["lib/hcolumns/evidence.rb", "+18", true],
+                  ["lib/hcolumns/observation.rb", "+9", false],
+                  ["lib/hcolumns/edge.rb", "+12", false]],
+          test: ["rspec — 71 examples", :behavior], log: "0 failures (0.9s)" }
+      ].freeze
 
       def session_id
         Identity.id_for(**SESSION_KEY)
       end
 
-      # The session as an ordered list of timed events: each is
-      # { after: seconds_from_start, kind: :node | :observe, payload: ... }.
-      def script(now:)
+      def index_id
+        Identity.id_for(**INDEX_KEY)
+      end
+
+      def spec_for(key)
+        SESSIONS.find { |s| s[:key] == key }
+      end
+
+      # One session as an ordered list of timed events plus its root node. Each
+      # entry is { after:, kind: :node | :observe, payload: }. `after` is the live
+      # release timeline (seconds); the observation's observed_at is the session's
+      # logical time (now − days_ago), so older sessions decay and rank lower.
+      def session_events(spec, now:)
+        at = now - (spec[:days_ago] * Evidence::DAY_SECONDS)
         node = lambda do |type, identity, name|
           Node.new(type: type, identity: identity, properties: { name: name, path: name })
         end
-        file = ->(path) { node.(:SourceFile, { scheme: "fs.path", key: "local:/repo/#{path}" }, path) }
 
-        session = node.(:Session, SESSION_KEY, "Task: add agent provider")
+        session = node.(:Session, { scheme: "agent.session", key: spec[:key] }, "Task: #{spec[:task]}")
         agent   = node.(:Agent, { scheme: "agent", key: "claude" }, "claude")
-        change  = node.(:ProposedChange, { scheme: "agent.change", key: "s1:c1" },
-                        "diff: agent_session provider (+evidence kind)")
+        change  = node.(:ProposedChange, { scheme: "agent.change", key: "#{spec[:key]}:c1" }, spec[:change])
+        files   = spec[:files].map { |path, churn, focus| [node.(:SourceFile, { scheme: "fs.path", key: "local:/repo/#{path}" }, path), churn, focus] }
+        test    = node.(:TestRun, { scheme: "agent.test", key: "#{spec[:key]}:t1" }, spec[:test][0])
+        log     = node.(:LogLine, { scheme: "agent.log", key: "#{spec[:key]}:l1" }, spec[:log])
 
-        provider_rb = file.("lib/hcolumns/providers/agent_session.rb")
-        evidence_rb = file.("lib/hcolumns/evidence.rb")
-        requires_rb = file.("lib/hcolumns.rb")
-        spec_rb     = file.("spec/providers/agent_session_spec.rb")
-
-        test = node.(:TestRun, { scheme: "agent.test", key: "s1:t1" }, "rspec — 84 examples")
-        log  = node.(:LogLine, { scheme: "agent.log", key: "s1:l1" }, "0 failures (0.9s)")
-
-        # The agent is acting *now*, so observations are fresh; `after` is the live
-        # release timeline (seconds), distinct from the observation's logical time.
+        add = ->(n) { { kind: :node, payload: n } }
         obs = lambda do |subject, object, type, kind, summary, weight: 1.0|
           { kind: :observe,
             payload: Observation.new(provider: :agent, subject_id: subject.id, target_id: object.id,
                                      edge_type: type, weight: weight, evidence_kind: kind,
-                                     observed_at: now, evidence_summary: summary) }
+                                     observed_at: at, evidence_summary: summary) }
         end
-        add = ->(n) { { kind: :node, payload: n } }
 
-        entries = [
-          # t0 — the task exists and we know who is driving it
+        timed = [
           [0.0, add.(session)],
           [0.0, add.(agent)],
           [0.0, obs.(session, agent, :DRIVEN_BY, :structure, "session actor")],
-          # ~1s — the agent proposes a change for the task (its assertion, ages)
           [1.0, add.(change)],
-          [1.0, obs.(session, change, :PROPOSES, :agent, "proposed to satisfy the task")],
-          # the diff lands file by file — verifiable ground truth (1.0 each)
-          [1.6, add.(provider_rb)],
-          [1.6, obs.(change, provider_rb, :TOUCHES, :structure, "diff hunk (+221)")],
-          [1.6, obs.(change, provider_rb, :FOCUSES_ON, :agent, "primary file (221 of 260 lines)")],
-          [2.1, add.(evidence_rb)],
-          [2.1, obs.(change, evidence_rb, :TOUCHES, :structure, "diff hunk (+1)")],
-          [2.6, add.(requires_rb)],
-          [2.6, obs.(change, requires_rb, :TOUCHES, :structure, "diff hunk (+1)")],
-          [3.1, add.(spec_rb)],
-          [3.1, obs.(change, spec_rb, :TOUCHES, :structure, "diff hunk (+38)")],
-          # ~4s — the agent runs the suite to verify, which emits a summary line
-          [4.0, add.(test)],
-          [4.0, obs.(change, test, :VERIFIED_BY, :behavior, "ran rspec after the edit")],
-          [4.6, add.(log)],
-          [4.6, obs.(test, log, :EMITTED, :behavior, "rspec summary line")]
+          [1.0, obs.(session, change, :PROPOSES, :agent, "proposed to satisfy the task")]
+        ]
+        files.each_with_index do |(file, churn, focus), i|
+          t = 1.6 + (i * 0.5)
+          timed << [t, add.(file)]
+          timed << [t, obs.(change, file, :TOUCHES, :structure, "diff hunk (#{churn})")]
+          timed << [t, obs.(change, file, :FOCUSES_ON, :agent, "primary file of the change")] if focus
+        end
+        tail = 1.6 + (files.size * 0.5)
+        timed += [
+          [tail + 0.4, add.(test)],
+          [tail + 0.4, obs.(change, test, :VERIFIED_BY, spec[:test][1], "ran the suite after the edit")],
+          [tail + 1.0, add.(log)],
+          [tail + 1.0, obs.(test, log, :EMITTED, spec[:test][1], "suite summary line")]
         ]
 
-        entries.map { |after, e| e.merge(after: after) }
+        { session: session, at: at, entries: timed.map { |after, e| e.merge(after: after) } }
       end
 
-      # The frozen graph: release the whole script at once (timeline collapsed).
+      def script(now:)
+        session_events(spec_for("s1"), now: now)[:entries]
+      end
+
+      # The frozen graph for the live demo session alone (timeline collapsed).
       def build(now:)
         graph = Graph.new
         feed(now: now).release(Float::INFINITY, into: graph)
@@ -101,6 +128,32 @@ module HColumns
 
       def feed(now:, log: EventLog.new)
         Feed.new(script(now: now), log: log)
+      end
+
+      # The sessions index: a root node with a HAS_SESSION edge to each session,
+      # ranked newest-first (recency). Every session's route is folded in, so you
+      # can descend into any of them — except `live_key`, left as a bare node whose
+      # route a Feed streams in (the live list walk).
+      def sessions_graph(now:, live_key: nil)
+        graph = Graph.new
+        index = Node.new(type: :Sessions, identity: INDEX_KEY, properties: { name: "agent sessions" })
+        graph.add_node(index)
+
+        SESSIONS.each do |spec|
+          built = session_events(spec, now: now)
+          if spec[:key] == live_key
+            graph.add_node(built[:session]) # shell only; the route arrives via the Feed
+          else
+            built[:entries].each { |e| e[:kind] == :node ? graph.add_node(e[:payload]) : graph.observe(e[:payload]) }
+          end
+          graph.observe(Observation.new(
+                          provider: :agent, subject_id: index.id, target_id: built[:session].id,
+                          edge_type: :HAS_SESSION, weight: 1.0, evidence_kind: :structure,
+                          observed_at: built[:at],
+                          evidence_summary: "#{spec[:files].size} file(s) · #{spec[:test][0]}"
+                        ))
+        end
+        graph
       end
 
       # Releases a timed script into an EventLog as wall-clock elapses, folding the
@@ -116,8 +169,6 @@ module HColumns
           @cursor = 0
         end
 
-        # Append every entry whose `after` has arrived, fold the new tail into the
-        # graph, and report whether the projection changed.
         def release(elapsed, into:)
           before = @log.version
           while @cursor < @script.length && @script[@cursor][:after] <= elapsed

@@ -19,6 +19,7 @@ module HColumns
       case cmd
       when "explore" then explore(@argv.first)
       when "walk" then walk(@argv.first)
+      when "inspect" then inspect_node(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
       else
@@ -82,6 +83,7 @@ module HColumns
     # defaults to the demo repo root.
     def walk(arg)
       return walk_live_session if arg == "session" && @opts[:live]
+      return walk_live_sessions if arg == "sessions" && @opts[:live]
 
       workspace, node_id = target_for(arg, fixture_default: "repo/")
       unless node_id
@@ -113,10 +115,41 @@ module HColumns
       1
     end
 
+    # The sessions list with the newest session streaming: the index + the older
+    # sessions are present from the start; descend into the live one to watch its
+    # route grow under you.
+    def walk_live_sessions
+      live_key = Providers::AgentSession::SESSIONS.first[:key]
+      graph = Providers::AgentSession.sessions_graph(now: now, live_key: live_key)
+      feed = Providers::AgentSession.feed(now: now)
+      feed.release(0.0, into: graph) # seed the live session's t0 onto its shell node
+      workspace = Workspace.new(graph: graph, lens: lens)
+      cascade = Cascade.new(workspace, Providers::AgentSession.index_id, now: now, feed: feed)
+      TUI.new(cascade).run
+      0
+    rescue TUI::NoTTY => e
+      warn e.message
+      warn "(the live session needs an interactive terminal)"
+      1
+    end
+
     # Returns [workspace, node_id]. A real filesystem path is indexed via the
     # filesystem/naming providers (the selected node is that path); otherwise the
     # arg selects into the demo graph.
+    # The contextual inspector: everything about a node and how it got here.
+    def inspect_node(arg)
+      workspace, node_id = target_for(arg, fixture_default: "src/orders.rb")
+      unless node_id
+        warn "no node matching #{arg.inspect}"
+        return 1
+      end
+      workspace.expand(node_id, now: now) # so a real path has its edges
+      puts Renderers::Detail.new.node(workspace.node(node_id), workspace.graph, lens: lens, now: now)
+      0
+    end
+
     def target_for(arg, fixture_default:)
+      return [sessions_workspace, Providers::AgentSession.index_id] if arg == "sessions"
       return [session_workspace, Providers::AgentSession.session_id] if arg == "session"
 
       path = arg && File.expand_path(arg)
@@ -144,6 +177,11 @@ module HColumns
       @session_workspace ||= Workspace.new(graph: Providers::AgentSession.build(now: now), lens: lens)
     end
 
+    # The frozen sessions index: every session listed, each descendable.
+    def sessions_workspace
+      @sessions_workspace ||= Workspace.new(graph: Providers::AgentSession.sessions_graph(now: now), lens: lens)
+    end
+
     # Resolve a demo selector to a node id: exact id, exact name, then substring.
     def resolve_in_fixture(selector)
       graph = fixture_workspace.graph
@@ -168,11 +206,16 @@ module HColumns
           hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;
                                      r cycles the lens, [ ] move the confidence floor)
                                      (a real dir is indexed lazily; default: demo repo root)
+          hcol walk sessions         walk the list of agent sessions, descend into any
+          hcol walk sessions --live  …with the newest session streaming as it works
           hcol explore session       the agent-session route (Task→change→files→test→log)
           hcol walk session          walk that route interactively
-          hcol walk session --live   watch the column grow as the agent "works"
+          hcol walk session --live   watch one session's column grow as the agent "works"
+          hcol inspect [node|path]   everything about a node: data, provenance, confidence math
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
+
+        in walk, press i to inspect the selected item (data + how it got here + scoring).
 
         lens flags (on explore/walk):
           --role NAME                #{Lens.names.join(' | ')}
