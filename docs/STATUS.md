@@ -5,11 +5,21 @@
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed on `main`** (working tree clean). The **live/push fork is resolved and
-> built**: Charris chose path (a) — an append-only event log under the read-model — and option B —
-> the column grows live as the agent works. `hcol walk session --live` is real. See
-> [§8](#8-next-up--open-threads) for what's left (persistence/JSONL, undo/`:retract`, a real async
-> producer).
+> ✅ **All work is committed on `main`** (working tree clean, 112 ex green). **Resume at
+> [§8](#8-next-up--open-threads).**
+>
+> **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
+> (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
+> **live agent session** (`hcol walk session --live`, the column grows as the agent works) →
+> **sessions index** + **inspector** → **dynamic interface**: per-column **mode tabs** (auto by
+> node type, `Tab` to cycle, resolver-ranked), the **agent's phase** reordering modes live (the UI
+> follows what the agent is *doing*), a real **diff facet**, and a **full-width detail dock** for
+> hunks/breakdowns. That completes the dynamic-interface arc Charris set as the north-star use case.
+>
+> **Pick up next (one of):** a real `debug`/`test`/`log` facet · **goal biases *ranking*** (the
+> "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a real async event
+> producer. Trade-offs in [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris
+> first (he earns architecture through worked use cases — see project memory).
 
 ---
 
@@ -202,9 +212,23 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 5–9 are committed; tree clean. **The live/push fork is resolved (path a: event log under the
-read-model) and built (option B: column grows live).** `hcol walk session --live` works. What's left,
-roughly in dependency order:
+Layers 1–12b are committed; tree clean, 112 ex green. The **event log** (path a) and the **live
+agent session** (option B) are built, and the **dynamic interface** is complete: per-column mode
+tabs, agent-phase-driven auto modes, a diff facet, and a full-width detail dock. This is a natural
+resume point — the north-star dynamic-interface arc is done; what's open are deepenings and the
+deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charris first, per
+[[feedback-discuss-tradeoffs]] — present the trade-off and a worked use case before recommending):
+
+- **A real `debug`/`test`/`log` facet.** Only `diff` exists. A `TestRun` debug facet (foreground the
+  failing assertion) or a `LogLine` facet (surrounding output) would make the `debugging` phase land
+  harder than today's `details`+`git` mapping. Slots in as a `Mode` subclass + `applies?` + a
+  `PHASE_PREFERENCE`/`POLICY` entry — no core change. Lowest-risk, high-visibility next step.
+- **Goal biases *ranking* (the deep one — the hugel-v1 "soil").** Phase reorders *modes* today; the
+  next escalation is a goal/relevance term so that *within* a column, goal-relevant entries rank
+  higher. This reaches into the tuner/score (the `session:` seam currently only reaches the
+  resolver). Load-bearing — work the use case through first.
+- **Goal/phase reaching the multi-session index.** The index walk passes `session: nil`; deriving
+  "which session am I within" from the trail would let phase biasing apply there too.
 
 - **Persistence — JSONL on disk.** The event log is in-memory; the hügel framing wants the mound to
   survive restarts (the one "upward revision from in-memory only" in the architecture memo). An
@@ -230,17 +254,6 @@ roughly in dependency order:
   adjacent to the "decaying deterministic confidence" knob already in §9.
 - **Inspector depth.** `DetailFacet` covers a node + its edges + confidence math. Could grow: the
   full event/seq history behind an edge (now that the log carries it).
-- **Goal biases *ranking*, not just mode order (the deeper slice).** Phase now reorders modes (done);
-  the next step is a goal/relevance term so that *within* a column, goal-relevant entries rank higher
-  — "given this goal, what matters most from here?" This edges toward the hugel-v1 "soil"
-  (personalized relevance / PageRank). The `session:` seam already reaches the resolver; it would also
-  need to reach the tuner/score.
-- **More facets.** Only `diff` exists. `test`/`debug`/`log` facets (a `TestRun` foregrounding the
-  failing assertion; a `LogLine` showing surrounding output) are the obvious next renderer-carrying
-  modes — `Mode` subclass + `applies?` + a `PHASE_PREFERENCE`/`POLICY` entry, no core change. A real
-  `debug` facet would make the `debugging` phase land harder (today it maps to `details`+`git`).
-- **Phase in the sessions index.** The index walk passes `session: nil`; phase biasing only applies to
-  the single-session walks. Deriving "which session am I within" from the trail would extend it.
 - **Auto-mode feel.** Worth living with to judge the default picks (`SourceFile`→`default`,
   `ProposedChange`→`diff`) and the phase→mode mappings, and whether re-descending should remember a
   pinned tab (today it reopens on auto).
