@@ -15,6 +15,7 @@ module HColumns
 
     def run
       cmd = @argv.shift || "explore"
+      @opts = parse_opts!
       case cmd
       when "explore" then explore(@argv.first)
       when "walk" then walk(@argv.first)
@@ -28,6 +29,37 @@ module HColumns
     end
 
     private
+
+    # Pull lens flags out of argv, leaving positionals: --role/--lens NAME,
+    # --floor N, --strict (sugar for the reviewer lens). `=`-joined forms too.
+    def parse_opts!
+      opts = {}
+      rest = []
+      while (arg = @argv.shift)
+        case arg
+        when "--role", "--lens" then opts[:role] = @argv.shift
+        when "--floor" then opts[:floor] = @argv.shift&.to_f
+        when "--strict" then opts[:role] = "reviewer"
+        when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
+        when /\A--floor=(.+)/ then opts[:floor] = Regexp.last_match(1).to_f
+        else rest << arg
+        end
+      end
+      @argv = rest
+      opts
+    end
+
+    # The lens selected by the flags (default unless --role/--strict/--floor).
+    def lens
+      @lens ||=
+        begin
+          base = Lens.preset(@opts[:role] || :default)
+          @opts[:floor] ? base.with_floor(@opts[:floor]) : base
+        rescue ArgumentError => e
+          warn e.message
+          Lens.new(name: :default)
+        end
+    end
 
     # One pinned clock per invocation: graph and columns see the same `now`.
     def now
@@ -70,7 +102,9 @@ module HColumns
         providers = [Providers::Filesystem.new, Providers::NamingRules.new]
         repo = Providers::Git.repo_root(path)
         providers << Providers::Git.new(repo) if repo
-        workspace = Workspace.new(providers: providers)
+        root = repo || (File.directory?(path) ? path : File.dirname(path))
+        providers << Providers::RubyCode.new(root)
+        workspace = Workspace.new(providers: providers, lens: lens)
         root = workspace.add_node(Providers::Filesystem.node_for(path))
         [workspace, root.id]
       else
@@ -79,7 +113,7 @@ module HColumns
     end
 
     def fixture_workspace
-      @fixture_workspace ||= Workspace.new(graph: Providers::InMemoryFixture.build(now: now))
+      @fixture_workspace ||= Workspace.new(graph: Providers::InMemoryFixture.build(now: now), lens: lens)
     end
 
     # Resolve a demo selector to a node id: exact id, exact name, then substring.
@@ -103,10 +137,16 @@ module HColumns
 
           hcol explore [node|path]   print the ranked column for a node or a real file/dir
                                      (default: src/orders.rb in the demo graph)
-          hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl)
+          hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;
+                                     r cycles the lens, [ ] move the confidence floor)
                                      (a real dir is indexed lazily; default: demo repo root)
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
+
+        lens flags (on explore/walk):
+          --role NAME                #{Lens.names.join(' | ')}
+          --strict                   sugar for --role reviewer
+          --floor N                  hide edges below confidence N (0.0–1.0)
       TXT
       0
     end

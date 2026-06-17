@@ -7,13 +7,13 @@ module HColumns
   class ColumnEntry
     attr_reader :edge, :target, :score, :confidence, :recency, :maturity
 
-    def initialize(edge:, target:, now:, tuner:)
+    def initialize(edge:, target:, now:, lens:)
       @edge = edge
       @target = target
-      @score = tuner.score(edge, now: now)
-      @confidence = edge.confidence(now: now)
+      @score = lens.score(edge, now: now)
+      @confidence = lens.confidence(edge, now: now) # lens-adjusted, so the bar matches the rank
       @recency = edge.recency(now: now)
-      @maturity = edge.maturity(now: now)
+      @maturity = edge.maturity(now: now) # structural truth, unaffected by the lens
     end
 
     def relation

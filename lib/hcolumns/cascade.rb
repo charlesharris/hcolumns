@@ -74,6 +74,44 @@ module HColumns
       self
     end
 
+    # --- live retune (the lens knobs) ---------------------------------------
+
+    # Cycle to the next lens preset and rebuild the walked path under it.
+    def cycle_lens
+      return self unless retunable?
+
+      @source.lens = Lens.cycle(@source.lens.name)
+      rebuild!
+    end
+
+    # Nudge the confidence floor (the `[`/`]` keys), clamped to [0,1].
+    def adjust_floor(delta)
+      return self unless retunable?
+
+      floor = (@source.lens.tuner.floor + delta).clamp(0.0, 1.0)
+      @source.lens = @source.lens.with_floor(floor)
+      rebuild!
+    end
+
+    # A short "explorer · floor 0.35" label for the status line, or nil if the
+    # source has no lens (e.g. a bare graph in a test).
+    def lens_label
+      return nil unless retunable?
+
+      "#{@source.lens.name} · floor #{format('%.2f', @source.lens.tuner.floor)}"
+    end
+
+    # Rebuild every frame's column from source (after a lens change), preserving
+    # the walked path and clamping each cursor to the new, possibly shorter list.
+    def rebuild!
+      @frames = @frames.map do |frame|
+        column = build(frame.column.root.id)
+        last = [column.entries.length - 1, 0].max
+        Frame.new(column: column, cursor: frame.cursor.clamp(0, last))
+      end
+      self
+    end
+
     # The column the active selection *would* open — shown as a live preview to
     # the right of the cascade, not (yet) part of the walked path.
     def preview_column
@@ -87,6 +125,10 @@ module HColumns
     end
 
     private
+
+    def retunable?
+      @source.respond_to?(:lens) && @source.respond_to?(:lens=)
+    end
 
     def build(node_id)
       @source.column_for(node_id, now: @now)

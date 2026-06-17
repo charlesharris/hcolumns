@@ -13,13 +13,20 @@ module HColumns
   # With no providers a Workspace just serves a pre-folded graph (the in-memory
   # fixture demo), so one API covers both eager and lazy sources.
   class Workspace
-    attr_reader :graph
+    attr_reader :graph, :lens
 
-    def initialize(graph: Graph.new, providers: [], tuner: Tuner.new)
+    def initialize(graph: Graph.new, providers: [], lens: Lens.new(name: :default))
       @graph = graph
       @providers = providers
       @expanded = {}
-      @builder = ColumnBuilder.new(@graph, tuner: tuner)
+      self.lens = lens
+    end
+
+    # Swap the lens (the live retune). Only the read-model rebuilds — the graph
+    # and what's already been expanded are untouched, so re-lensing is cheap.
+    def lens=(new_lens)
+      @lens = new_lens
+      @builder = ColumnBuilder.new(@graph, lens: new_lens)
     end
 
     def add_node(node)
