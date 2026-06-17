@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 111 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 112 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -58,7 +58,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
-| `3e306ff` | **12b** — **richer preview pane**. The far-right preview shows the selected *item's* detail when it has one: a diff facet's file shows its hunk, a details facet's edge shows its confidence breakdown. Fallback for item-less detail: the target's auto panel, or its `details` facet if that's empty — so a leaf previews as identity + how-it's-reached, never a bare "(leaf)". Diff bodies live on the `ProposedChange` node (`properties[:hunks]`); s1 carries representative hunks (a real agent/diff provider would fill them for real). Preview lines are still clipped to the (equal) column width — a wider/repositioned diff pane is an open follow-up. |
+| `5a39f66` | **12b** — **richer detail + full-width dock**. The selected item's detail (a diff facet's **hunk**, a details facet's edge breakdown) now renders in a **full-width dock below the cascade** (`CascadeText#dock_lines`, separator + clamp to `DOCK_MAX`, body height reserves it) — readable, not clipped to a narrow column. The right **preview column** is a navigational peek of the descend target (auto mode, `details`-facet fallback so a leaf isn't empty). Diff bodies live on the `ProposedChange` node (`properties[:hunks]`); s1 carries representative hunks (a real agent/diff provider would fill them for real). |
 | `1357ea5` | **12** — **dynamic interface: agent phase drives the modes**. The auto mode follows what the agent is *doing*. A session's phase (exploring/editing/testing/debugging/reviewing) lives as a `:phase` property on the `Session` node, set by re-emitting it (an event — survives replay, shows in the inspector); `SessionContext` reads it. `ModeResolver` floats `PHASE_PREFERENCE` modes to the head, filtered by `Mode#applies?` (editing can't force `diff` onto a `SourceFile`), `:details` always kept. `Cascade` Frame gains `pinned`; `rebuild!` re-resolves *non-pinned* frames against the current phase (auto follows) and refreshes their node, while a Tab/`i`-pinned frame stays. `AgentSession` s1 emits a phase timeline (editing→testing@4s→reviewing@5.5s) by re-emitting the node. pty-verified: a descended change frame flips diff→reviewer live as the agent moves editing→testing. |
 | `d6c70d2` | **11** — **dynamic interface: context-driven mode tabs**. The lens stops being one global toggle and becomes a *function of where you are*: a `ModeResolver` (keyed on node type; `session:` seam reserved for goal/phase biasing) returns a **ranked list of modes** per node — head = auto, rest = the tabs (resolver-ranked, not all-lenses). A `Mode#panel(node,ws,now) → Panel` (a rendering split into sections of headings/lines + focusable `items`); `LensMode` = the lensed column as a panel, `DetailFacet` = the inspector as a panel (the `i` modal retired — details is a tab now), `DiffFacet` = the first *renderer-carrying* facet (a `ProposedChange` as a changeset: files+churn, focus ★, ✓ status, each file descendable). `Cascade` Frame = `{node, modes, tab, cursor, panel}`; nav runs over `panel.items` (any facet); `Tab`/`r` cycle a column's modes, `i` jumps to details, `[`/`]` floor lens panels. Each column can be on a different mode at once. pty-verified on the live session. |
 | `35a0a41` | **10** — **sessions index + contextual inspector**: `sessions_graph(now:)` adds a `Sessions` index node with `HAS_SESSION` to every session (one `session_events` builder drives the live script, the frozen `build`, and the index); `hcol explore/walk sessions`, plus `--live` (the newest session streams as you descend, `live_key:` leaves it a shell). `Renderers::Detail` = the inspector: node identity/props + the edge(s) relating it + the confidence math to each observation (reliability = base × decay × lens-mix, noisy-OR vs deterministic pin) + the lens score. TUI `i` inspects the selected entry; `hcol inspect <node\|path>` inspects a node in the round (all in/out edges). Session list is alphabetical, not newest-first (recency doesn't separate non-decaying structure edges) — noted follow-up. |
@@ -121,8 +121,9 @@ renderers/
   text.rb               single column (maturity glyph, confidence bar, rank reason); fixed width
   detail.rb             the inspector: node identity/props + relating edge(s) + confidence math per
                         observation (base×decay×mix, noisy-OR/pin) + lens score. entry() (TUI i) / node() (CLI)
-  cascade_text.rb       side-by-side columns; viewport-aware render(width:,height:): clip to rightmost
-                        fitting columns, grow to fill, truncate chrome, vertical clamp + overflow marker
+  cascade_text.rb       side-by-side panels (tab strip per column) + a full-width bottom dock for the
+                        selected item's detail (hunk/breakdown); viewport-aware render(width:,height:):
+                        clip to rightmost fitting columns, grow to fill, reserve dock rows, vertical clamp
 tui.rb                  interactive driver (raw mode, arrows/hjkl, r/[/], q/Esc/Ctrl-C; CR+LF on paint);
                         reads winsize each paint (floored vs 0×0), repaints live on SIGWINCH
 cli.rb                  explore / walk / nodes / help; --role/--floor/--strict lens flags; real path
@@ -240,10 +241,6 @@ roughly in dependency order:
   `debug` facet would make the `debugging` phase land harder (today it maps to `details`+`git`).
 - **Phase in the sessions index.** The index walk passes `session: nil`; phase biasing only applies to
   the single-session walks. Deriving "which session am I within" from the trail would extend it.
-- **Wider / repositioned preview for diffs.** The preview shows hunks now but clips them to the equal
-  column width. Options: give the preview pane a larger width share, or make it a full-width bottom
-  panel (a "detail dock") below the cascade — a layout choice worth deciding before building. The
-  renderer already does per-viewport width math; per-column widths is the change.
 - **Auto-mode feel.** Worth living with to judge the default picks (`SourceFile`→`default`,
   `ProposedChange`→`diff`) and the phase→mode mappings, and whether re-descending should remember a
   pinned tab (today it reopens on auto).
