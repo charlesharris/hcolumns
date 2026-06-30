@@ -51,6 +51,9 @@ module HColumns
         Lens.names.each { |lens_name| modes[lens_name] = LensMode.new(name: lens_name, lens: Lens.preset(lens_name)) }
         modes[:details] = DetailFacet.new
         modes[:diff] = DiffFacet.new
+        modes[:source] = SourceMode.new   # a file's text
+        modes[:gitdiff] = GitDiffMode.new # a commit's diff
+        modes[:output] = OutputMode.new   # a test run / log line's captured output
         modes
       end
     end

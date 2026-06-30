@@ -133,7 +133,7 @@ module HColumns
             overflow-x: auto; overflow-y: hidden;
           }
           .col {
-            flex: 0 0 24em; min-width: 24em; overflow-y: auto;
+            flex: 0 0 24em; min-width: 24em; overflow: auto;
             border-right: 1px solid #262b36; padding: 6px 0;
           }
           .col-head {
@@ -156,6 +156,10 @@ module HColumns
             text-transform: uppercase; letter-spacing: .04em;
           }
           .line { padding: 1px 12px; color: #8b949e; white-space: pre; }
+          .line.add { color: #3fb950; }
+          .line.del { color: #f85149; }
+          .line.hunk { color: #58a6ff; }
+          .line.meta { color: #6e7681; }
           .item {
             padding: 2px 12px; cursor: pointer; display: flex;
             gap: 8px; align-items: baseline;
@@ -191,6 +195,17 @@ module HColumns
           if (c == null) return '';
           const n = Math.max(0, Math.min(10, Math.round(c * 10)));
           return '█'.repeat(n) + '░'.repeat(10 - n);
+        }
+
+        // diff lines get +/-/@@ coloring, but only inside a gitdiff panel so a
+        // markdown bullet ('- item') in a source listing isn't mistaken for a del.
+        function lineClass(line, mode) {
+          if (mode !== 'gitdiff') return 'line';
+          if (line.startsWith('+')) return 'line add';
+          if (line.startsWith('-')) return 'line del';
+          if (line.startsWith('@@')) return 'line hunk';
+          if (/^(diff |index |commit |Author:|Date:)/.test(line)) return 'line meta';
+          return 'line';
         }
 
         async function fetchPanel(id, mode) {
@@ -237,7 +252,7 @@ module HColumns
             }
             (s.lines || []).forEach(line => {
               const l = document.createElement('div');
-              l.className = 'line';
+              l.className = lineClass(line, panel.mode);
               l.textContent = line;
               col.appendChild(l);
             });

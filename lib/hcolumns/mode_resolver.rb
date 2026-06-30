@@ -15,12 +15,15 @@ module HColumns
   class ModeResolver
     # node type -> ordered mode keys (first = auto, absent a phase).
     POLICY = {
-      SourceFile: %i[default git details],
-      TestFile: %i[reviewer default details],
+      SourceFile: %i[default source git details],
+      TestFile: %i[reviewer default source details],
+      Doc: %i[default source details],
+      File: %i[default source details],
       Directory: %i[default git details],
+      Commit: %i[gitdiff default details],
       ProposedChange: %i[diff reviewer details],
-      TestRun: %i[default details],
-      LogLine: %i[default details],
+      TestRun: %i[output default details],
+      LogLine: %i[output default details],
       Session: %i[default details],
       Sessions: %i[default details],
       Person: %i[git details],

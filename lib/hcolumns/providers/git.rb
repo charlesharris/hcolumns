@@ -29,6 +29,18 @@ module HColumns
         status.success? ? out.strip : nil
       end
 
+      # A commit's diff (with --stat) for the `gitdiff` content facet — bounded to
+      # `limit` lines so a sprawling change doesn't flood the panel. Pure read.
+      def self.show(repo, sha, limit: 600)
+        out, _err, status = Open3.capture3("git", "-C", repo, "show", "--stat", "-p", "--no-color", sha)
+        return ["(diff unavailable)"] unless status.success? && !out.strip.empty?
+
+        lines = out.split("\n")
+        return lines if lines.size <= limit
+
+        lines.first(limit) + ["… (#{lines.size - limit} more lines truncated)"]
+      end
+
       def initialize(repo_root)
         @root = repo_root
       end

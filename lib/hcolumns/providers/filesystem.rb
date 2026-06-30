@@ -70,6 +70,23 @@ module HColumns
         rescue SystemCallError
           fallback
         end
+
+        MAX_PREVIEW_BYTES = 512 * 1024 # don't slurp a huge/binary blob into a preview
+
+        # A file's text for the `source` content facet: up to `limit` lines, with a
+        # size guard and encoding scrub so a stray binary doesn't blow up the view.
+        # Returns [lines, truncated?, total_lines] — total is nil when not counted.
+        def read_lines(path, limit: 400)
+          return [["(file too large to preview)"], false, nil] if File.size(path) > MAX_PREVIEW_BYTES
+
+          raw = File.read(path, encoding: "UTF-8")
+          raw = raw.scrub("?") unless raw.valid_encoding?
+          all = raw.split("\n", -1)
+          all.pop if all.last == "" # the trailing empty from a final newline
+          [all.first(limit), all.size > limit, all.size]
+        rescue SystemCallError
+          [["(unreadable)"], false, nil]
+        end
       end
     end
   end

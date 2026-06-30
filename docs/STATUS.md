@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 127 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 137 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -16,11 +16,14 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > follows what the agent is *doing*), a real **diff facet**, and a **full-width detail dock** for
 > hunks/breakdowns → **second front-end (web)**: the Panel/Node data serializes to JSON and a
 > zero-dep HTTP server (`hcol serve`) renders the *same* walkable columns in a browser — proving the
-> cross-front-end contract lives in the data, not any renderer. The terminal stops being the only probe.
+> cross-front-end contract lives in the data, not any renderer. The terminal stops being the only probe →
+> **content tabs**: a node's *contents* are now a facet beside its relations — a file's **source**, a
+> commit's **diff** (`git show`, +/- colored in the browser), a run's **output** — derived views read
+> from disk/git on demand, never folded into the graph. Same Mode/tab machinery, so the TUI gets them too.
 >
-> **Pick up next (one of):** a real `debug`/`test`/`log` facet · **goal biases *ranking*** (the
-> "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a real async event
-> producer · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
+> **Pick up next (one of):** a file's *latest* diff in git-context (a SourceFile `gitdiff`) · **goal
+> biases *ranking*** (the "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a
+> real async event producer · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -71,6 +74,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| *(this)* | **14** — **content tabs (file source · git diff · run output)**. A node's *contents* become a facet beside its relations: `SourceMode` (a file's text, numbered + bounded), `GitDiffMode` (a `Commit` → `git show --stat -p`, bounded), `OutputMode` (a `TestRun`/`LogLine` → its captured `:output`, falling back to the summary line). Each `applies?` guards its tab, so it only shows when there's real content — a demo node whose path isn't on disk just doesn't get `source`. **Derived views, never folded into the graph** (file bytes/diffs are volatile rendering against the live fs/git, not substrate). I/O lives in the providers (`Filesystem.read_lines` w/ size+encoding guard, `Git.show`). Resolver `POLICY`: `source` on file types, `gitdiff` auto on `Commit`, `output` on `TestRun`/`LogLine`, new `Doc`/`File` entries. Web client colors diff `+`/`-`/`@@`/meta lines and scrolls content both axes. AgentSession s1 enriched with real test/log output. Same Mode machinery → the TUI gets the tabs too. 10 specs; server-verified all three. |
 | `597c712` | **13** — **second front-end: web**. `Web::Serializer` (a renderer peer: same `Panel`/`Node` data → plain JSON-able Hashes, geometry ignored — the point being the contract is the *data*); `Web::App` (the consumer the serializer lacked: a node id → its panel + the **resolver-ranked modes**, via the *same* `ModeResolver` the TUI drives, so browser/terminal agree on tabs+auto by construction; one stateful `Workspace` held across calls = descend-as-you-go); `Web::Server` (dependency-free raw-`TCPServer` HTTP — no webrick/rack, matching the hand-rolled TUI; pure `respond(method,path,query)` router split from the socket loop so routing is socket-free testable; `/` serves an inline columns client (HTML/CSS/JS, ROOT_ID patched in), `/panel?id=&mode=` serves the JSON it fetches to render + descend). `hcol json [node]` (the contract on stdout) + `hcol serve [node] [--port]`. pty-free-verified: browser descends README→…, phase drives the session's auto mode to `reviewer`, 404 on unknown node. 15 new specs. |
 | `5a39f66` | **12b** — **richer detail + full-width dock**. The selected item's detail (a diff facet's **hunk**, a details facet's edge breakdown) now renders in a **full-width dock below the cascade** (`CascadeText#dock_lines`, separator + clamp to `DOCK_MAX`, body height reserves it) — readable, not clipped to a narrow column. The right **preview column** is a navigational peek of the descend target (auto mode, `details`-facet fallback so a leaf isn't empty). Diff bodies live on the `ProposedChange` node (`properties[:hunks]`); s1 carries representative hunks (a real agent/diff provider would fill them for real). |
 | `1357ea5` | **12** — **dynamic interface: agent phase drives the modes**. The auto mode follows what the agent is *doing*. A session's phase (exploring/editing/testing/debugging/reviewing) lives as a `:phase` property on the `Session` node, set by re-emitting it (an event — survives replay, shows in the inspector); `SessionContext` reads it. `ModeResolver` floats `PHASE_PREFERENCE` modes to the head, filtered by `Mode#applies?` (editing can't force `diff` onto a `SourceFile`), `:details` always kept. `Cascade` Frame gains `pinned`; `rebuild!` re-resolves *non-pinned* frames against the current phase (auto follows) and refreshes their node, while a Tab/`i`-pinned frame stays. `AgentSession` s1 emits a phase timeline (editing→testing@4s→reviewing@5.5s) by re-emitting the node. pty-verified: a descended change frame flips diff→reviewer live as the agent moves editing→testing. |
@@ -109,6 +113,9 @@ panel.rb           what a column generalizes to: a Panel = sections of headings/
 mode.rb            Mode#panel(node,ws,now)->Panel + a name->mode registry. LensMode = lensed column as
                    a panel; DetailFacet = inspector as a panel (items = the node's edges); DiffFacet =
                    a ProposedChange as a changeset (the first renderer-carrying facet)
+content_modes.rb   content facets (a node's contents, not relations; derived views, not graph-folded):
+                   SourceMode (file text, numbered/bounded), GitDiffMode (Commit -> git show), OutputMode
+                   (TestRun/LogLine -> captured :output). Each applies? gates its tab to real content
 mode_resolver.rb   node type -> ranked [Mode] (head = auto). A session's phase floats PHASE_PREFERENCE
                    modes to the head (filtered by Mode#applies?), :details always kept. Keystone of the UI
 session_context.rb the session a walk sits in; reads the current phase off the Session node (event-
@@ -234,10 +241,13 @@ resume point — the north-star dynamic-interface arc is done; what's open are d
 deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charris first, per
 [[feedback-discuss-tradeoffs]] — present the trade-off and a worked use case before recommending):
 
-- **A real `debug`/`test`/`log` facet.** Only `diff` exists. A `TestRun` debug facet (foreground the
-  failing assertion) or a `LogLine` facet (surrounding output) would make the `debugging` phase land
-  harder than today's `details`+`git` mapping. Slots in as a `Mode` subclass + `applies?` + a
-  `PHASE_PREFERENCE`/`POLICY` entry — no core change. Lowest-risk, high-visibility next step.
+- **Sharpen the `debugging` phase (content facets now exist).** Layer 14 added `source`/`gitdiff`/
+  `output` facets, so a `TestRun`/`LogLine` already shows its captured output. What's *not* done: a
+  facet that **foregrounds the failing assertion** (vs the whole run), and wiring a content facet into
+  `PHASE_PREFERENCE[:debugging]` so the debugging phase auto-opens output/diff rather than `details`+
+  `git`. Both are small (a `Mode#panel` tweak + a resolver entry). Also open: a file's *latest* diff in
+  git-context (`gitdiff` currently applies to `Commit` only — a SourceFile version needs a cheap
+  repo-root signal so `applies?` stays subprocess-free).
 - **Goal biases *ranking* (the deep one — the hugel-v1 "soil").** Phase reorders *modes* today; the
   next escalation is a goal/relevance term so that *within* a column, goal-relevant entries rank
   higher. This reaches into the tuner/score (the `session:` seam currently only reaches the

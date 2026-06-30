@@ -42,6 +42,20 @@ module HColumns
                   ["lib/hcolumns.rb", "+1", false],
                   ["spec/providers/agent_session_spec.rb", "+38", false]],
           test: ["rspec — 84 examples", :behavior], log: "0 failures (0.9s)",
+          # captured output for the `output` content facet (a real runner/log
+          # provider would fill these; here they're representative)
+          test_output: [
+            "$ bundle exec rspec",
+            "................................................ (84)",
+            "",
+            "Finished in 0.90 seconds (files took 0.17s to load)",
+            "84 examples, 0 failures"
+          ],
+          log_output: [
+            "[12:00:03] suite start — seed 12345",
+            "[12:00:04] 0 failures (0.9s)",
+            "[12:00:04] done"
+          ],
           # the agent's workflow phase over the timeline — drives the live modes
           phases: [[0.0, :editing], [4.0, :testing], [5.5, :reviewing]],
           # representative hunks, shown in the preview pane (the diff body lives on
@@ -112,8 +126,10 @@ module HColumns
         change  = Node.new(type: :ProposedChange, identity: { scheme: "agent.change", key: "#{spec[:key]}:c1" },
                            properties: { name: spec[:change], hunks: spec[:hunks] || {} })
         files   = spec[:files].map { |path, churn, focus| [node.(:SourceFile, { scheme: "fs.path", key: "local:/repo/#{path}" }, path), churn, focus] }
-        test    = node.(:TestRun, { scheme: "agent.test", key: "#{spec[:key]}:t1" }, spec[:test][0])
-        log     = node.(:LogLine, { scheme: "agent.log", key: "#{spec[:key]}:l1" }, spec[:log])
+        test    = Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "#{spec[:key]}:t1" },
+                           properties: { name: spec[:test][0], path: spec[:test][0], output: spec[:test_output] })
+        log     = Node.new(type: :LogLine, identity: { scheme: "agent.log", key: "#{spec[:key]}:l1" },
+                           properties: { name: spec[:log], path: spec[:log], output: spec[:log_output] })
 
         add = ->(n) { { kind: :node, payload: n } }
         obs = lambda do |subject, object, type, kind, summary, weight: 1.0|
