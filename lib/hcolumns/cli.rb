@@ -173,19 +173,51 @@ module HColumns
     end
 
     # Serve the columns over HTTP: a browser renders the same panels the TUI does,
-    # descending by fetching the next node's JSON. The second front-end.
+    # descending by fetching the next node's JSON. With `--live` on the session /
+    # sessions demo the column grows in the browser as the agent works (the web
+    # analogue of `walk session --live`). The second front-end.
     def serve(arg)
-      app, node_id = web_app_for(arg, fixture_default: "repo/")
-      unless node_id
-        warn "no node matching #{arg.inspect}"
-        return 1
-      end
-      server = Web::Server.new(app, port: @opts[:port] || 4567)
-      server.start { |s| warn "hcolumns serving on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
+      app =
+        if @opts[:live] && %w[session sessions].include?(arg)
+          live_web_app(arg)
+        else
+          static, node_id = web_app_for(arg, fixture_default: "repo/")
+          return missing(arg) unless node_id
+
+          static
+        end
+      banner = app.live? ? "serving (live)" : "serving"
+      Web::Server.new(app, port: @opts[:port] || 4567)
+        .start { |s| warn "hcolumns #{banner} on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
       0
     rescue Interrupt
       warn "\nstopped"
       0
+    end
+
+    def missing(arg)
+      warn "no node matching #{arg.inspect}"
+      1
+    end
+
+    # A live web App over the agent session: the Feed releases events as wall-clock
+    # elapses (pumped per request), so the browser's columns grow. Mirrors the
+    # walk_live_session / walk_live_sessions seeding.
+    def live_web_app(arg)
+      feed = Providers::AgentSession.feed(now: now)
+      if arg == "sessions"
+        live_key = Providers::AgentSession::SESSIONS.first[:key]
+        graph = Providers::AgentSession.sessions_graph(now: now, live_key: live_key)
+        feed.release(0.0, into: graph)
+        Web::App.new(workspace: Workspace.new(graph: graph, lens: lens),
+                     root_id: Providers::AgentSession.index_id, now: now, feed: feed)
+      else
+        graph = Graph.new
+        feed.release(0.0, into: graph)
+        Web::App.new(workspace: Workspace.new(graph: graph, lens: lens),
+                     root_id: Providers::AgentSession.session_id, now: now,
+                     session: session_context(graph), feed: feed)
+      end
     end
 
     # Builds [Web::App, root_id] for a node selector, wiring the session context
@@ -265,6 +297,7 @@ module HColumns
           hcol inspect [node|path]   everything about a node: data, provenance, confidence math
           hcol json [node|path]      the node's panel + ranked modes as JSON (the web data contract)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
+          hcol serve session --live  …with the session streaming: columns grow in the browser as it works
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 

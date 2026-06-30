@@ -26,13 +26,19 @@ module HColumns
         @port = port
       end
 
-      # (method, path, query-hash) -> [status, content_type, body]. No I/O.
+      # (method, path, query-hash) -> [status, content_type, body]. The only
+      # side effect is the live pump: a live App releases any due events before it
+      # answers, so every request — a poll or a descend — sees the current graph
+      # (single-writer, request-driven; no background thread).
       def respond(method, path, query)
         return [405, "text/plain", "method not allowed\n"] unless method == "GET"
+
+        @app.pump if @app.live?
 
         case path
         when "/" then [200, "text/html; charset=utf-8", index_html]
         when "/root" then json_response(@app.root)
+        when "/state" then json_response({ version: @app.version, done: @app.done? })
         when "/panel"
           id = query["id"]
           json_response(id && @app.panel(id, mode: query["mode"]),
@@ -102,7 +108,7 @@ module HColumns
       end
 
       def index_html
-        INDEX_HTML.sub("__ROOT_ID__", @app.root_id.to_s)
+        INDEX_HTML.sub("__ROOT_ID__", @app.root_id.to_s).sub("__LIVE__", @app.live?.to_s)
       end
 
       # The whole client, inline. Single-quoted heredoc so the JS `${}` template
@@ -128,6 +134,9 @@ module HColumns
             color: #8b949e; flex: 0 0 auto;
           }
           header b { color: #d2a8ff; }
+          header .live { color: #3fb950; margin-left: 8px; }
+          @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+          header .live.on { animation: pulse 1.4s ease-in-out infinite; }
           #board {
             flex: 1 1 auto; display: flex; align-items: stretch;
             overflow-x: auto; overflow-y: hidden;
@@ -178,13 +187,15 @@ module HColumns
         </style>
         </head>
         <body>
-        <header><b>hcolumns</b> — click an item to descend · tabs are the node's modes</header>
+        <header><b>hcolumns</b> — click an item to descend · tabs are the node's modes<span id="livebadge"></span></header>
         <div id="board"></div>
         <pre id="dock"></pre>
         <script>
         const ROOT_ID = "__ROOT_ID__";
+        const LIVE = __LIVE__;
         const board = document.getElementById('board');
         const dock = document.getElementById('dock');
+        const columns = []; // {id, mode} per open column, parallel to board.children
 
         function esc(s) {
           return String(s).replace(/[&<>"]/g, c =>
@@ -274,14 +285,48 @@ module HColumns
         }
 
         async function openColumn(id, mode, depth) {
-          while (board.children.length > depth) board.removeChild(board.lastChild);
+          while (board.children.length > depth) { board.removeChild(board.lastChild); columns.pop(); }
           const panel = await fetchPanel(id, mode);
           if (!panel) return;
+          columns[depth] = { id, mode };
           board.appendChild(renderColumn(panel, depth));
           board.scrollLeft = board.scrollWidth;
         }
 
-        openColumn(ROOT_ID, null, 0);
+        // Live: re-fetch every open column in place (no truncation, no scroll jump),
+        // so a column grows new items and an auto-mode column re-resolves its tab as
+        // the agent's phase moves. Passing the stored mode (null = auto) preserves a
+        // pinned tab while letting auto follow the phase.
+        async function refreshOpen() {
+          for (let i = 0; i < columns.length; i++) {
+            const panel = await fetchPanel(columns[i].id, columns[i].mode);
+            if (!panel || !board.children[i]) continue;
+            board.replaceChild(renderColumn(panel, i), board.children[i]);
+          }
+        }
+
+        let liveVersion = -1;
+        async function pollLive() {
+          try {
+            const r = await fetch('/state');
+            if (r.ok) {
+              const s = await r.json();
+              if (s.version !== liveVersion) { liveVersion = s.version; await refreshOpen(); }
+              if (s.done) { setBadge('✓ session complete', false); return; }
+            }
+          } catch (e) { /* keep polling */ }
+          setTimeout(pollLive, 700);
+        }
+
+        function setBadge(text, pulsing) {
+          const b = document.getElementById('livebadge');
+          b.textContent = text;
+          b.className = 'live' + (pulsing ? ' on' : '');
+        }
+
+        openColumn(ROOT_ID, null, 0).then(() => {
+          if (LIVE) { setBadge('● live', true); pollLive(); }
+        });
         </script>
         </body>
         </html>

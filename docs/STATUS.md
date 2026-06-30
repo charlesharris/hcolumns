@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 137 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 143 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -19,9 +19,14 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > cross-front-end contract lives in the data, not any renderer. The terminal stops being the only probe →
 > **content tabs**: a node's *contents* are now a facet beside its relations — a file's **source**, a
 > commit's **diff** (`git show`, +/- colored in the browser), a run's **output** — derived views read
-> from disk/git on demand, never folded into the graph. Same Mode/tab machinery, so the TUI gets them too.
+> from disk/git on demand, never folded into the graph. Same Mode/tab machinery, so the TUI gets them too →
+> **live web** (`hcol serve session --live`): the browser watches the agent work — columns grow and the
+> auto mode flips editing→testing→reviewing as the Feed releases events. Done by *request-driven polling*
+> (a `/state` version the client polls; the server pumps due events per request), not threads/SSE — true
+> to the single-writer model; SSE is the upgrade paired with the real async producer.
 >
-> **Pick up next (one of):** a file's *latest* diff in git-context (a SourceFile `gitdiff`) · **goal
+> **Pick up next (one of):** the **real async producer** (a live agent appending to the `EventLog`; this
+> is when SSE + thread-safety get solved together) · a file's *latest* diff in git-context (a SourceFile `gitdiff`) · **goal
 > biases *ranking*** (the "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a
 > real async event producer · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
@@ -74,6 +79,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| *(this)* | **15** — **live web (request-driven)**. `hcol serve session --live` (and `sessions --live`): the browser watches the agent session grow, the web analogue of `walk session --live`. `Web::App` gains an optional `feed:` + injectable `clock:`; `pump` releases due events (`elapsed = clock − start`) into the graph — single-writer, **per request**, the web echo of `Cascade#tick`. New `/state` route returns `{version, done}`; the server pumps before answering *any* request, so a poll or a descend both see the current graph. The client tracks its open columns, polls `/state` ~700ms, and on a version bump **re-fetches every open column in place** — so a column grows new items and an auto-mode column re-resolves its tab as the phase moves (pinned tabs preserved). A pulsing "● live" badge; "✓ session complete" stops the poll on `done`. **No threads/SSE** — true to the single-writer posture (the `EventLog` thread-safety + SSE belong with the real async producer). Non-live path byte-identical (`feed` nil ⇒ `live?` false ⇒ no pump, `LIVE=false`). 6 specs (injected clock: growth, phase flip, done, `/state`); server-verified the column grows + auto flips reviewer at t≈6s. |
 | `be4b56c` | **14** — **content tabs (file source · git diff · run output)**. A node's *contents* become a facet beside its relations: `SourceMode` (a file's text, numbered + bounded), `GitDiffMode` (a `Commit` → `git show --stat -p`, bounded), `OutputMode` (a `TestRun`/`LogLine` → its captured `:output`, falling back to the summary line). Each `applies?` guards its tab, so it only shows when there's real content — a demo node whose path isn't on disk just doesn't get `source`. **Derived views, never folded into the graph** (file bytes/diffs are volatile rendering against the live fs/git, not substrate). I/O lives in the providers (`Filesystem.read_lines` w/ size+encoding guard, `Git.show`). Resolver `POLICY`: `source` on file types, `gitdiff` auto on `Commit`, `output` on `TestRun`/`LogLine`, new `Doc`/`File` entries. Web client colors diff `+`/`-`/`@@`/meta lines and scrolls content both axes. AgentSession s1 enriched with real test/log output. Same Mode machinery → the TUI gets the tabs too. 10 specs; server-verified all three. |
 | `597c712` | **13** — **second front-end: web**. `Web::Serializer` (a renderer peer: same `Panel`/`Node` data → plain JSON-able Hashes, geometry ignored — the point being the contract is the *data*); `Web::App` (the consumer the serializer lacked: a node id → its panel + the **resolver-ranked modes**, via the *same* `ModeResolver` the TUI drives, so browser/terminal agree on tabs+auto by construction; one stateful `Workspace` held across calls = descend-as-you-go); `Web::Server` (dependency-free raw-`TCPServer` HTTP — no webrick/rack, matching the hand-rolled TUI; pure `respond(method,path,query)` router split from the socket loop so routing is socket-free testable; `/` serves an inline columns client (HTML/CSS/JS, ROOT_ID patched in), `/panel?id=&mode=` serves the JSON it fetches to render + descend). `hcol json [node]` (the contract on stdout) + `hcol serve [node] [--port]`. pty-free-verified: browser descends README→…, phase drives the session's auto mode to `reviewer`, 404 on unknown node. 15 new specs. |
 | `5a39f66` | **12b** — **richer detail + full-width dock**. The selected item's detail (a diff facet's **hunk**, a details facet's edge breakdown) now renders in a **full-width dock below the cascade** (`CascadeText#dock_lines`, separator + clamp to `DOCK_MAX`, body height reserves it) — readable, not clipped to a narrow column. The right **preview column** is a navigational peek of the descend target (auto mode, `details`-facet fallback so a leaf isn't empty). Diff bodies live on the `ProposedChange` node (`properties[:hunks]`); s1 carries representative hunks (a real agent/diff provider would fill them for real). |
@@ -141,9 +147,13 @@ providers/
 web/                    the second front-end — a renderer peer that emits data, not terminal text:
   serializer.rb         Panel/Node/Section/Item -> JSON-able Hash (symbols/nested props made JSON-safe)
   app.rb                node id (+ optional mode) -> serialized panel + resolver-ranked modes, using the
-                        SAME ModeResolver as the TUI; one stateful Workspace held across calls = descend
+                        SAME ModeResolver as the TUI; one stateful Workspace held across calls = descend.
+                        Optional feed: + clock: makes it LIVE: pump releases due events per request
+                        (elapsed = clock−start); version/done? drive the client poll (the web Cascade#tick)
   server.rb             zero-dep raw-TCPServer HTTP. pure respond(method,path,query) router (socket-free
-                        testable) + socket loop; `/` = inline columns client, `/panel?id=&mode=` = JSON
+                        testable, pumps a live app first) + socket loop; `/` = inline columns client,
+                        `/panel?id=&mode=` = JSON, `/state` = {version,done}. Client polls /state when LIVE
+                        and re-fetches open columns on a version bump (growth + phase-driven auto re-resolve)
 renderers/
   text.rb               single column (maturity glyph, confidence bar, rank reason); fixed width
   detail.rb             the inspector: node identity/props + relating edge(s) + confidence math per
@@ -282,13 +292,13 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
 - **Auto-mode feel.** Worth living with to judge the default picks (`SourceFile`→`default`,
   `ProposedChange`→`diff`) and the phase→mode mappings, and whether re-descending should remember a
   pinned tab (today it reopens on auto).
-- **Deepen the web client (layer 13 follow-ons).** The browser front-end renders + descends but is
-  static-fetch only. Natural next steps, each localized: **live** — the `walk session --live` `tick`
-  needs a push channel (SSE/long-poll over the `EventLog`) so the browser column grows like the TUI's;
-  **shareable cascade state** — encode the trail in the URL so a walk is linkable; **the dock** — the
-  client shows `detail`/`reason` but not the full-width hunk dock the TUI has; **pin/Tab parity** —
-  tabs work, but there's no pinned-tab-survives-descend like the cascade. None are load-bearing; they
-  deepen the probe. The data contract (`Serializer`) is the part that's locked.
+- **Deepen the web client (layers 13–15 follow-ons).** Renders, descends, content tabs, **and now
+  grows live** (layer 15, via request-driven polling). Remaining, each localized: **true SSE** — swap
+  the `/state` poll for a pushed `text/event-stream` (wants a threaded server + `EventLog` thread-safety,
+  so pair it with the real async producer); **shareable cascade state** — encode the trail in the URL so
+  a walk is linkable; **the dock** — the client shows `detail`/`reason` but not the full-width hunk dock
+  the TUI has; **pin/Tab parity** — a pinned tab survives a live refresh but not yet a re-descend. None
+  are load-bearing; they deepen the probe. The data contract (`Serializer`) is the part that's locked.
 - **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
   a session lens that dims code-graph noise is now a concrete want.
 - **Tune lens preset constants**; **lens label in the static renderer**; **other-language code

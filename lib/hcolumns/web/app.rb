@@ -17,12 +17,42 @@ module HColumns
     class App
       attr_reader :root_id
 
-      def initialize(workspace:, root_id:, now:, session: nil, resolver: ModeResolver.new)
+      # `feed` makes the App *live*: a duck-typed event Feed (release(elapsed, into:)
+      # / log / done?) whose due events are pumped into the graph on demand, the web
+      # analogue of the TUI's tick-on-IO-timeout. `clock` is the injectable wall
+      # clock (real time by default, a lambda in tests) used to measure elapsed.
+      def initialize(workspace:, root_id:, now:, session: nil, resolver: ModeResolver.new,
+                     feed: nil, clock: -> { Time.now })
         @workspace = workspace
         @root_id = root_id
         @now = now
         @session = session
         @resolver = resolver
+        @feed = feed
+        @clock = clock
+        @start = clock.call if feed
+      end
+
+      def live?
+        !@feed.nil?
+      end
+
+      # Release any events whose time has arrived into the graph (single-writer, on
+      # request — the consumer drives the clock, exactly like Cascade#tick). Returns
+      # whether anything new landed. A no-op for a static (non-live) App.
+      def pump
+        return false unless @feed
+
+        @feed.release(@clock.call - @start, into: @workspace.graph)
+      end
+
+      # The log seq the client polls on — bumps as events are released.
+      def version
+        @feed ? @feed.log.version : 0
+      end
+
+      def done?
+        @feed ? @feed.done? : true
       end
 
       # node id (+ optional tab/mode key) -> serializer Hash, or nil for an unknown
