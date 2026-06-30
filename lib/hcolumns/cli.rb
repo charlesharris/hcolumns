@@ -20,6 +20,8 @@ module HColumns
       when "explore" then explore(@argv.first)
       when "walk" then walk(@argv.first)
       when "inspect" then inspect_node(@argv.first)
+      when "json" then emit_json(@argv.first)
+      when "serve" then serve(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
       else
@@ -42,8 +44,10 @@ module HColumns
         when "--floor" then opts[:floor] = @argv.shift&.to_f
         when "--strict" then opts[:role] = "reviewer"
         when "--live" then opts[:live] = true
+        when "--port" then opts[:port] = @argv.shift&.to_i
         when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
         when /\A--floor=(.+)/ then opts[:floor] = Regexp.last_match(1).to_f
+        when /\A--port=(.+)/ then opts[:port] = Regexp.last_match(1).to_i
         else rest << arg
         end
       end
@@ -155,6 +159,46 @@ module HColumns
       0
     end
 
+    # The web front-end's data contract, on stdout: the same Panel+ranked-modes a
+    # browser (or the TUI) would render for a node, as JSON. Proves the cross-
+    # front-end contract end-to-end without a server.
+    def emit_json(arg)
+      app, node_id = web_app_for(arg, fixture_default: "src/orders.rb")
+      unless node_id
+        warn "no node matching #{arg.inspect}"
+        return 1
+      end
+      puts JSON.pretty_generate(app.panel(node_id))
+      0
+    end
+
+    # Serve the columns over HTTP: a browser renders the same panels the TUI does,
+    # descending by fetching the next node's JSON. The second front-end.
+    def serve(arg)
+      app, node_id = web_app_for(arg, fixture_default: "repo/")
+      unless node_id
+        warn "no node matching #{arg.inspect}"
+        return 1
+      end
+      server = Web::Server.new(app, port: @opts[:port] || 4567)
+      server.start { |s| warn "hcolumns serving on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
+      0
+    rescue Interrupt
+      warn "\nstopped"
+      0
+    end
+
+    # Builds [Web::App, root_id] for a node selector, wiring the session context
+    # when walking the agent session so the browser's auto modes follow the phase.
+    def web_app_for(arg, fixture_default:)
+      workspace, node_id = target_for(arg, fixture_default: fixture_default)
+      return [nil, nil] unless node_id
+
+      session = session_context(workspace.graph) if arg == "session"
+      app = Web::App.new(workspace: workspace, root_id: node_id, now: now, session: session)
+      [app, node_id]
+    end
+
     def target_for(arg, fixture_default:)
       return [sessions_workspace, Providers::AgentSession.index_id] if arg == "sessions"
       return [session_workspace, Providers::AgentSession.session_id] if arg == "session"
@@ -219,6 +263,8 @@ module HColumns
           hcol walk session          walk that route interactively
           hcol walk session --live   watch one session's column grow as the agent "works"
           hcol inspect [node|path]   everything about a node: data, provenance, confidence math
+          hcol json [node|path]      the node's panel + ranked modes as JSON (the web data contract)
+          hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 

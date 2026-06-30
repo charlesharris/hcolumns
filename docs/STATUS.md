@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-17 · **Branch:** `main` · **Tests:** 112 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 127 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -14,12 +14,15 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > **sessions index** + **inspector** → **dynamic interface**: per-column **mode tabs** (auto by
 > node type, `Tab` to cycle, resolver-ranked), the **agent's phase** reordering modes live (the UI
 > follows what the agent is *doing*), a real **diff facet**, and a **full-width detail dock** for
-> hunks/breakdowns. That completes the dynamic-interface arc Charris set as the north-star use case.
+> hunks/breakdowns → **second front-end (web)**: the Panel/Node data serializes to JSON and a
+> zero-dep HTTP server (`hcol serve`) renders the *same* walkable columns in a browser — proving the
+> cross-front-end contract lives in the data, not any renderer. The terminal stops being the only probe.
 >
 > **Pick up next (one of):** a real `debug`/`test`/`log` facet · **goal biases *ranking*** (the
 > "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a real async event
-> producer. Trade-offs in [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris
-> first (he earns architecture through worked use cases — see project memory).
+> producer · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
+> [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
+> architecture through worked use cases — see project memory).
 
 ---
 
@@ -68,6 +71,7 @@ source is just a new provider that appends observations.
 | `f1e3728` | **adaptive TUI width** — `CascadeText.render(cascade, width:, height:)`: shows the rightmost columns that fit (older scroll off left, `‹` marker, full trail kept in breadcrumb), grows columns to fill (MIN 16…MAX 44), truncates chrome, clamps height with a `↓ +N` overflow marker. `TUI` reads `winsize` each paint (hardened against 0×0) and repaints live on `SIGWINCH`. No-width path unchanged (goldens hold). |
 | `446280e` | chore — `install.sh` (idempotent build+install of the `hcol` gem; rbenv-rehashes). |
 | `446280e` | **8** — **agent-as-event-source (frozen)**: an `agent` evidence kind (0.7, ~7d half-life) + `AgentSession` fixture freezing one session as a graph. The route `Session→PROPOSES→ProposedChange→TOUCHES files / VERIFIED_BY TestRun→EMITTED LogLine` walks as a cascade — the guiding-star thesis, made concrete. Deterministic `TOUCHES` (1.0) vs the agent's `PROPOSES`/`FOCUSES_ON` assertions (0.70) are visibly separated; touched files carry real `fs.path` ids so they unify with the code graph. `hcol explore/walk session`. |
+| `aa31f0a` | **13** — **second front-end: web**. `Web::Serializer` (a renderer peer: same `Panel`/`Node` data → plain JSON-able Hashes, geometry ignored — the point being the contract is the *data*); `Web::App` (the consumer the serializer lacked: a node id → its panel + the **resolver-ranked modes**, via the *same* `ModeResolver` the TUI drives, so browser/terminal agree on tabs+auto by construction; one stateful `Workspace` held across calls = descend-as-you-go); `Web::Server` (dependency-free raw-`TCPServer` HTTP — no webrick/rack, matching the hand-rolled TUI; pure `respond(method,path,query)` router split from the socket loop so routing is socket-free testable; `/` serves an inline columns client (HTML/CSS/JS, ROOT_ID patched in), `/panel?id=&mode=` serves the JSON it fetches to render + descend). `hcol json [node]` (the contract on stdout) + `hcol serve [node] [--port]`. pty-free-verified: browser descends README→…, phase drives the session's auto mode to `reviewer`, 404 on unknown node. 15 new specs. |
 | `5a39f66` | **12b** — **richer detail + full-width dock**. The selected item's detail (a diff facet's **hunk**, a details facet's edge breakdown) now renders in a **full-width dock below the cascade** (`CascadeText#dock_lines`, separator + clamp to `DOCK_MAX`, body height reserves it) — readable, not clipped to a narrow column. The right **preview column** is a navigational peek of the descend target (auto mode, `details`-facet fallback so a leaf isn't empty). Diff bodies live on the `ProposedChange` node (`properties[:hunks]`); s1 carries representative hunks (a real agent/diff provider would fill them for real). |
 | `1357ea5` | **12** — **dynamic interface: agent phase drives the modes**. The auto mode follows what the agent is *doing*. A session's phase (exploring/editing/testing/debugging/reviewing) lives as a `:phase` property on the `Session` node, set by re-emitting it (an event — survives replay, shows in the inspector); `SessionContext` reads it. `ModeResolver` floats `PHASE_PREFERENCE` modes to the head, filtered by `Mode#applies?` (editing can't force `diff` onto a `SourceFile`), `:details` always kept. `Cascade` Frame gains `pinned`; `rebuild!` re-resolves *non-pinned* frames against the current phase (auto follows) and refreshes their node, while a Tab/`i`-pinned frame stays. `AgentSession` s1 emits a phase timeline (editing→testing@4s→reviewing@5.5s) by re-emitting the node. pty-verified: a descended change frame flips diff→reviewer live as the agent moves editing→testing. |
 | `d6c70d2` | **11** — **dynamic interface: context-driven mode tabs**. The lens stops being one global toggle and becomes a *function of where you are*: a `ModeResolver` (keyed on node type; `session:` seam reserved for goal/phase biasing) returns a **ranked list of modes** per node — head = auto, rest = the tabs (resolver-ranked, not all-lenses). A `Mode#panel(node,ws,now) → Panel` (a rendering split into sections of headings/lines + focusable `items`); `LensMode` = the lensed column as a panel, `DetailFacet` = the inspector as a panel (the `i` modal retired — details is a tab now), `DiffFacet` = the first *renderer-carrying* facet (a `ProposedChange` as a changeset: files+churn, focus ★, ✓ status, each file descendable). `Cascade` Frame = `{node, modes, tab, cursor, panel}`; nav runs over `panel.items` (any facet); `Tab`/`r` cycle a column's modes, `i` jumps to details, `[`/`]` floor lens panels. Each column can be on a different mode at once. pty-verified on the live session. |
@@ -127,6 +131,12 @@ providers/
   ruby_code.rb          DEFINES/DEPENDS_ON/REFERENCES via Ripper AST; nested Analyzer walks the
                         sexp keeping a module/class scope stack; lazy cached repo const index
                         (MAX_INDEX_FILES=2000) backs cross-file REFERENCES + DEFINED_IN back-edge
+web/                    the second front-end — a renderer peer that emits data, not terminal text:
+  serializer.rb         Panel/Node/Section/Item -> JSON-able Hash (symbols/nested props made JSON-safe)
+  app.rb                node id (+ optional mode) -> serialized panel + resolver-ranked modes, using the
+                        SAME ModeResolver as the TUI; one stateful Workspace held across calls = descend
+  server.rb             zero-dep raw-TCPServer HTTP. pure respond(method,path,query) router (socket-free
+                        testable) + socket loop; `/` = inline columns client, `/panel?id=&mode=` = JSON
 renderers/
   text.rb               single column (maturity glyph, confidence bar, rank reason); fixed width
   detail.rb             the inspector: node identity/props + relating edge(s) + confidence math per
@@ -146,7 +156,7 @@ cli.rb                  explore / walk / nodes / help; --role/--floor/--strict l
 
 ```sh
 bundle install
-bundle exec rspec                 # 74 examples
+bundle exec rspec                 # 127 examples
 ./install.sh                      # build + install the hcol gem (idempotent); -s skips tests
 
 # demo graph (in-memory fixture)
@@ -163,6 +173,11 @@ bundle exec rspec                 # 74 examples
 ./exe/hcol explore . --role git              # lift commits/branches, dim files
 ./exe/hcol explore lib/hcolumns/cascade.rb --role reviewer   # strict: structure-first, weak edges hidden
 ./exe/hcol explore . --role explorer --floor 0.6             # speculative + a confidence floor
+
+# the web front-end — same columns, in a browser (zero runtime deps)
+./exe/hcol json src/orders.rb                # the node's panel + ranked modes as JSON (the data contract)
+./exe/hcol serve .                           # GET / = columns client, /panel?id=&mode= = JSON; --port N
+./exe/hcol serve session                     # the agent-session route, walkable in a browser; phase drives auto mode
 ```
 
 Verified end-to-end (incl. PTY-driven interactive walks of the real repo). On a real file,
@@ -257,6 +272,13 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
 - **Auto-mode feel.** Worth living with to judge the default picks (`SourceFile`→`default`,
   `ProposedChange`→`diff`) and the phase→mode mappings, and whether re-descending should remember a
   pinned tab (today it reopens on auto).
+- **Deepen the web client (layer 13 follow-ons).** The browser front-end renders + descends but is
+  static-fetch only. Natural next steps, each localized: **live** — the `walk session --live` `tick`
+  needs a push channel (SSE/long-poll over the `EventLog`) so the browser column grows like the TUI's;
+  **shareable cascade state** — encode the trail in the URL so a walk is linkable; **the dock** — the
+  client shows `detail`/`reason` but not the full-width hunk dock the TUI has; **pin/Tab parity** —
+  tabs work, but there's no pinned-tab-survives-descend like the cascade. None are load-bearing; they
+  deepen the probe. The data contract (`Serializer`) is the part that's locked.
 - **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
   a session lens that dims code-graph noise is now a concrete want.
 - **Tune lens preset constants**; **lens label in the static renderer**; **other-language code
