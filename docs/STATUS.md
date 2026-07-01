@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-06-30 · **Branch:** `main` · **Tests:** 143 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 152 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -23,12 +23,16 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > **live web** (`hcol serve session --live`): the browser watches the agent work — columns grow and the
 > auto mode flips editing→testing→reviewing as the Feed releases events. Done by *request-driven polling*
 > (a `/state` version the client polls; the server pumps due events per request), not threads/SSE — true
-> to the single-writer model; SSE is the upgrade paired with the real async producer.
+> to the single-writer model; SSE is the upgrade paired with the real async producer →
+> **persistence (JSONL)**: the event log serializes one-event-per-line to disk and replays on load
+> (`hcol save session f.jsonl` → `hcol walk f.jsonl`), so a session survives a restart — the hügel "the
+> mound persists" step. A symbol/Time-faithful codec keeps replay-from-disk *behaviorally* identical to
+> in-memory (`:phase` stays a Symbol, so phase-biasing still fires on a reload).
 >
 > **Pick up next (one of):** the **real async producer** (a live agent appending to the `EventLog`; this
 > is when SSE + thread-safety get solved together) · a file's *latest* diff in git-context (a SourceFile `gitdiff`) · **goal
-> biases *ranking*** (the "soil" step into the tuner) · JSONL **persistence** · **`:retract`/undo** · a
-> real async event producer · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
+> biases *ranking*** (the "soil" step into the tuner) · **`:retract`/undo** (the log is on disk now, so
+> frozen-at-seq-K and undo are the natural next log features) · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -66,6 +70,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _pending_ | **16** — **persistence (JSONL)**: the event log serializes to disk (one JSON object per line, seq order = replay order) and replays on load — the hügel "the mound persists" step. `Persistence.dump/load` + `hcol save <session\|sessions> f.jsonl`; a `.jsonl` path to `explore/walk/serve/json` reloads it (graph re-projected from the log, root = the first `:node` event). The load-bearing piece is a **symbol/Time-faithful `Codec`**: JSON drops Ruby Symbols (edge/evidence kinds, a Session's `:phase` — a *string* there silently kills phase biasing) and Time (`observed_at`, drives decay). All-symbol-keyed hashes stay readable plain objects and re-symbolize on load; a mixed/string-keyed hash (a diff's `hunks`, keyed by file path) falls back to a tagged `$map` pair-list so key *types* survive; symbol values → `$sym`, Time → `$time` (via `to_r`, exact instant). So replay-from-disk is *behaviorally* identical to in-memory — verified: a reloaded frozen session's `:phase` is still `:reviewing`, so its auto mode resolves to `reviewer`. `session_context` now keys on the `:phase` property (not the magic arg `"session"`), so a loaded session drives modes too. `sessions_graph` gained an optional `graph:` seam so a log-backed snapshot captures every event. 9 specs. |
 | `0ad2737` | **1** — property-graph substrate (Node, Observation, Edge=fold w/ confidence+maturity+provenance, Graph), evidence model w/ decay on an injected clock, confidence+recency Tuner, ColumnBuilder, in-memory fixture, text renderer, `hcol explore` |
 | `8159860` | **2** — interactive Miller-column cascade: `Cascade` (pure nav state), `CascadeText` (side-by-side renderer), `TUI` (raw input, arrows/hjkl), `hcol walk` |
 | `bf2bcbc` | **3** — lazy `Workspace` + on-demand provider seam; **filesystem** (`CONTAINS`) and **naming-rules** (`PAIR`) providers; `hcol walk <real-dir>`; alphabetical sibling tiebreak |
@@ -103,6 +108,9 @@ graph.rb           nodes + edge projection; observe()/add_node() record to an op
                    apply_*(); apply_* fold without recording (the replay path); edges_from/into
 event_log.rb       append-only source of truth: append/version/since/fold/project(replay). Graph is
                    a projection folded from it; :node + :observe events (:retract designed-in, deferred)
+persistence.rb     JSONL on disk: dump(log,io)/load(io) one event per line; root_id = first :node.
+                   Codec round-trips what JSON drops — Symbols ($sym / plain object for all-symbol keys /
+                   $map pair-list for mixed keys) and Time ($time via to_r). Node/Observation <-> Hash
 tuner.rb           evidence math: score = w_conf·confidence + w_recency·recency; floor + evidence_mix
 lens.rb            base engine: tuner + relation_weights + optional scope; score/visible?/admits?/
                    with_floor; name→class registry (preset/cycle). Base IS the neutral :default lens
@@ -195,6 +203,11 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol json src/orders.rb                # the node's panel + ranked modes as JSON (the data contract)
 ./exe/hcol serve .                           # GET / = columns client, /panel?id=&mode= = JSON; --port N
 ./exe/hcol serve session                     # the agent-session route, walkable in a browser; phase drives auto mode
+
+# persistence — the mound persists (JSONL snapshot + reload)
+./exe/hcol save session /tmp/s1.jsonl        # dump the session's event log to disk (one event per line)
+./exe/hcol walk /tmp/s1.jsonl                # reload it: the graph re-projects from the log, walkable
+./exe/hcol json /tmp/s1.jsonl                # …reloaded phase (:reviewing) still drives the auto mode -> reviewer
 ```
 
 Verified end-to-end (incl. PTY-driven interactive walks of the real repo). On a real file,
@@ -222,8 +235,11 @@ same column without recompute.
 ## 7. Known limitations / sharp edges
 
 - **Naming rule is heuristic** — lib↔spec transform misses flat `spec/` layouts (e.g. our own repo).
-- **No persistence** — every run rebuilds in memory. (hügel posture wants an accreting on-disk
-  log eventually; deferred.)
+- **Persistence is snapshot-only** — `hcol save` dumps a *whole* log and reload re-projects it, but
+  nothing *accretes* to disk live yet (no append-as-you-go log file, no auto-save on quit). The
+  next escalation is a file the `EventLog` tails/appends to as events arrive (pairs with the real
+  async producer). Also: the pull providers (fs/git/ruby) still don't record into a log, so only the
+  agent-session demo is snapshottable today; a real code walk isn't yet.
 - **Git provider cost** — up to 2 git subprocess calls per file expansion; bounded but not cached.
 - **Ruby reference index** — cross-file `REFERENCES` triggers a one-time repo scan (parse every
   .rb, bounded at 2000 files) on first use; cached per Workspace, but the one un-lazy cost here.
@@ -265,10 +281,12 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
 - **Goal/phase reaching the multi-session index.** The index walk passes `session: nil`; deriving
   "which session am I within" from the trail would let phase biasing apply there too.
 
-- **Persistence — JSONL on disk.** The event log is in-memory; the hügel framing wants the mound to
-  survive restarts (the one "upward revision from in-memory only" in the architecture memo). An
-  append-only log makes this nearly mechanical: serialize each event to a line, replay on load.
-  This is the natural immediate next step now that the log exists.
+- **Persistence — accreting on-disk log (layer 16 follow-on).** Snapshot dump/load is built
+  (`hcol save` → JSONL → reload re-projects). Remaining: an *append-as-you-go* log file the
+  `EventLog` writes to per event (not a whole-log dump), so a session accretes on disk as it runs and
+  a crash loses nothing — the true hügel "the mound persists". Pairs naturally with the real async
+  producer (both touch the append path). Also open: let the pull providers (fs/git/ruby) record into
+  a log so a real *code* walk is snapshottable, not just the agent-session demo.
 - **Undo / `:retract`.** The third event kind is designed-in but unimplemented — append a counter-
   event referencing an observation's seq, recompute just that edge (local; the edge keeps its
   observation list). This is the *other* feature that justified the log (agent reject/undo); it

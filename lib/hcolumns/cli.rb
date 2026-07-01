@@ -21,6 +21,7 @@ module HColumns
       when "walk" then walk(@argv.first)
       when "inspect" then inspect_node(@argv.first)
       when "json" then emit_json(@argv.first)
+      when "save" then save(@argv[0], @argv[1])
       when "serve" then serve(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
@@ -94,7 +95,7 @@ module HColumns
         warn "no node matching #{arg.inspect}"
         return 1
       end
-      session = session_context(workspace.graph) if arg == "session"
+      session = session_context_for(workspace.graph, node_id)
       TUI.new(Cascade.new(workspace, node_id, now: now, floor: @opts[:floor].to_f, session: session)).run
       0
     rescue TUI::NoTTY => e
@@ -124,6 +125,16 @@ module HColumns
     # The phase-bearing session a walk sits in, so modes follow the agent's work.
     def session_context(graph)
       SessionContext.new(graph: graph, node_id: Providers::AgentSession.session_id)
+    end
+
+    # A SessionContext for a root that declares a `:phase` (the Session node, live
+    # or reloaded from a snapshot) — nil otherwise. Keying on the phase property,
+    # not a magic arg, is what lets a loaded `.jsonl` session drive modes too.
+    def session_context_for(graph, node_id)
+      node = graph.node(node_id)
+      return nil unless node&.properties&.key?(:phase)
+
+      SessionContext.new(graph: graph, node_id: node_id)
     end
 
     # The sessions list with the newest session streaming: the index + the older
@@ -170,6 +181,40 @@ module HColumns
       end
       puts JSON.pretty_generate(app.panel(node_id))
       0
+    end
+
+    # Snapshot a session's event log to JSONL on disk — the mound persists. The
+    # log is the source of truth, so this is all it takes to reload a walkable
+    # session later (`hcol walk <file.jsonl>`); the graph re-projects on load.
+    def save(selector, path)
+      unless path
+        warn "usage: hcol save <session|sessions> <path.jsonl>"
+        return 1
+      end
+      log = persistable_log(selector)
+      unless log
+        warn "don't know how to snapshot #{selector.inspect} (try: session | sessions)"
+        return 1
+      end
+      File.open(path, "w") { |io| Persistence.dump(log, io) }
+      warn "wrote #{log.version} events to #{path}"
+      0
+    end
+
+    # The full event log behind a demo selector, folded whole (frozen). For the
+    # session that means releasing the entire timed script into a Feed's log; for
+    # the index, a log-backed graph so every HAS_SESSION + route event is recorded.
+    def persistable_log(selector)
+      case selector
+      when "session"
+        feed = Providers::AgentSession.feed(now: now)
+        feed.release(Float::INFINITY, into: Graph.new)
+        feed.log
+      when "sessions"
+        log = EventLog.new
+        Providers::AgentSession.sessions_graph(now: now, graph: Graph.new(log: log))
+        log
+      end
     end
 
     # Serve the columns over HTTP: a browser renders the same panels the TUI does,
@@ -226,7 +271,7 @@ module HColumns
       workspace, node_id = target_for(arg, fixture_default: fixture_default)
       return [nil, nil] unless node_id
 
-      session = session_context(workspace.graph) if arg == "session"
+      session = session_context_for(workspace.graph, node_id)
       app = Web::App.new(workspace: workspace, root_id: node_id, now: now, session: session)
       [app, node_id]
     end
@@ -236,7 +281,11 @@ module HColumns
       return [session_workspace, Providers::AgentSession.session_id] if arg == "session"
 
       path = arg && File.expand_path(arg)
-      if path && File.exist?(path)
+      if path && File.file?(path) && path.end_with?(".jsonl")
+        log = File.open(path, "r") { |io| Persistence.load(io) }
+        workspace = Workspace.new(graph: log.project, lens: lens)
+        [workspace, Persistence.root_id(log)]
+      elsif path && File.exist?(path)
         providers = [Providers::Filesystem.new, Providers::NamingRules.new]
         repo = Providers::Git.repo_root(path)
         providers << Providers::Git.new(repo) if repo
@@ -296,6 +345,10 @@ module HColumns
           hcol walk session --live   watch one session's column grow as the agent "works"
           hcol inspect [node|path]   everything about a node: data, provenance, confidence math
           hcol json [node|path]      the node's panel + ranked modes as JSON (the web data contract)
+          hcol save <session|sessions> <file.jsonl>
+                                     snapshot a session's event log to disk (the mound persists)
+          hcol explore|walk|serve <file.jsonl>
+                                     reload a snapshot: the graph re-projects from the log
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
           hcol serve session --live  …with the session streaming: columns grow in the browser as it works
           hcol nodes                 list nodes in the demo graph

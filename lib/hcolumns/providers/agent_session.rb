@@ -188,8 +188,7 @@ module HColumns
       # ranked newest-first (recency). Every session's route is folded in, so you
       # can descend into any of them — except `live_key`, left as a bare node whose
       # route a Feed streams in (the live list walk).
-      def sessions_graph(now:, live_key: nil)
-        graph = Graph.new
+      def sessions_graph(now:, live_key: nil, graph: Graph.new)
         index = Node.new(type: :Sessions, identity: INDEX_KEY, properties: { name: "agent sessions" })
         graph.add_node(index)
 
