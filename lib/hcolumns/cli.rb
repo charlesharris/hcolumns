@@ -303,20 +303,23 @@ module HColumns
     # sessions demo the column grows in the browser as the agent works (the web
     # analogue of `walk session --live`). The second front-end.
     def serve(arg)
-      app =
-        if @opts[:live] && %w[session sessions].include?(arg)
-          live_web_app(arg)
-        elsif @opts[:live] && log_path?(arg)
-          live_web_file_app(File.expand_path(arg)) || (return no_events(arg))
+      server =
+        if @opts[:live] && log_path?(arg)
+          tail_server(File.expand_path(arg)) || (return no_events(arg))
         else
-          static, node_id = web_app_for(arg, fixture_default: "repo/")
-          return missing(arg) unless node_id
+          app =
+            if @opts[:live] && %w[session sessions].include?(arg)
+              live_web_app(arg)
+            else
+              static, node_id = web_app_for(arg, fixture_default: "repo/")
+              return missing(arg) unless node_id
 
-          static
+              static
+            end
+          Web::Server.new(app, port: @opts[:port] || 4567)
         end
-      banner = app.live? ? "serving (live)" : "serving"
-      Web::Server.new(app, port: @opts[:port] || 4567)
-        .start { |s| warn "hcolumns #{banner} on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
+      banner = server.live? ? "serving (live)" : "serving"
+      server.start { |s| warn "hcolumns #{banner} on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
       0
     rescue Interrupt
       warn "\nstopped"
@@ -348,16 +351,24 @@ module HColumns
       end
     end
 
-    # A live web App tailing a producer's log: the browser's columns grow as the
-    # file grows (the web analogue of walk_live_file). nil if no root arrives.
-    def live_web_file_app(path)
-      reader = TailReader.new(path)
-      graph = Graph.new
-      root = await_root(reader, graph)
+    # A streaming web server tailing a producer's log. Each connection builds its
+    # OWN App (a fresh TailReader over the shared read-only file), so a long-lived
+    # /events stream and the /panel fetches share no mutable state — lock-free, the
+    # log-is-truth property of layer 17 extended to many in-process readers. nil if
+    # no root arrives (no producer running yet).
+    def tail_server(path)
+      root = await_root(TailReader.new(path), Graph.new)
       return nil unless root
 
-      Web::App.new(workspace: Workspace.new(graph: graph, lens: lens), root_id: root, now: now,
-                   session: session_context_for(graph, root), feed: reader)
+      the_lens = lens # capture once — the factory runs on many connection threads
+      the_now = now
+      factory = lambda do
+        graph = Graph.new
+        Web::App.new(workspace: Workspace.new(graph: graph, lens: the_lens), root_id: root,
+                     now: the_now, session: SessionContext.new(graph: graph, node_id: root),
+                     feed: TailReader.new(path))
+      end
+      Web::Server.new(app_factory: factory, streaming: true, port: @opts[:port] || 4567)
     end
 
     # Builds [Web::App, root_id] for a node selector, wiring the session context
@@ -447,7 +458,7 @@ module HColumns
           hcol produce <session|sessions> <file.jsonl>
                                      out-of-process producer: append events to the log in real time
           hcol walk <file.jsonl> --live    tail a producer's log; the cascade grows as events land
-          hcol serve <file.jsonl> --live   …same, in a browser (run `produce` in another terminal)
+          hcol serve <file.jsonl> --live   …same, in a browser, pushed over SSE (run `produce` alongside)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
           hcol serve session --live  …with the session streaming: columns grow in the browser as it works
           hcol nodes                 list nodes in the demo graph

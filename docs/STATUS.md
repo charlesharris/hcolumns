@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 159 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 162 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -35,10 +35,16 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > reframe dissolves the thread-safety the STATUS kept promising rather than paying for it. `TailReader`
 > duck-types the `Feed` (release/log/done?), so Cascade + Web::App drive it unchanged; a live log is also
 > a valid snapshot (same format, `eof` marker skipped). Verified two-process: the phase advances
-> editing→testing→reviewing under a tailing consumer.
+> editing→testing→reviewing under a tailing consumer →
+> **SSE (push, lock-free)**: the file-tail web serve (`serve f.jsonl --live`) now *pushes* over
+> `text/event-stream` instead of the `/state` poll. The server goes thread-per-connection (a long-lived
+> `/events` stream can't share the single-threaded accept loop), and each connection projects its **own**
+> tail of the shared read-only log — so concurrent connections share no mutable state and need **no lock**
+> (layer 17's log-is-truth property extended to many in-process readers). Verified over real sockets: the
+> stream pushes version bumps 3→…→20 then `done:true`, and `/panel` serves *concurrently* while `/events`
+> is held open. The in-memory `Feed` demo (`serve session --live`) stays on `/state` polling.
 >
-> **Pick up next (one of):** **SSE** (push the tail to the browser as `text/event-stream` — now a clean
-> follow-on: each connection independently projects the read-only log, so still no shared-mutable lock) ·
+> **Pick up next (one of):**
 > a **real external agent** appending to the log (a hook/bridge instead of the demo `produce`) · a file's
 > *latest* diff in git-context (a SourceFile `gitdiff`) · **goal biases *ranking*** (the "soil" step into
 > the tuner) · **`:retract`/undo** (frozen-at-seq-K and undo are the natural next log features) · **deepen
@@ -80,6 +86,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _pending_ | **18** — **SSE: push the tail to the browser (lock-free)**. The file-tail web serve stops *polling* `/state` and *pushes* over `text/event-stream`. The load-bearing consequence: a long-lived `/events` stream can't share the single-threaded accept loop, so the server goes **thread-per-connection** — and to stay lock-free (the choice made *with* Charris), each connection builds its **own** `App` tailing the shared read-only log (`Server.new(app_factory:, streaming: true)`), so a stream + concurrent `/panel` fetches share no mutable state and need no mutex (layer 17's log-is-truth property extended to many in-process readers; the `/panel` cost is re-folding the log per request, negligible at demo scale). New `/events` route (held open, pushes `{version, done}` whenever the log grows, closes on `eof`); `stream_events` bypasses the pure `respond` router (which stays `[status,type,body]` for the short routes). Client gains a `STREAM` flag → `EventSource('/events')` in place of the 700ms poll, same reaction (re-fetch open columns on a version bump, stop on done). The in-memory `Feed` demo (`serve session --live`) stays single-threaded on `/state` polling. Non-streaming serve byte-identical. Verified over real sockets (version 3→…→20 then done; `/panel` concurrent with an open stream). 3 specs. |
 | `fee683d` | **17** — **real async producer (out-of-process log-tail)**: the live demo's producer stops being a wall-clock-*polled* `Feed` and becomes a genuinely separate **process**. `hcol produce <session\|sessions> f.jsonl` (`LogProducer`) replays the timed script into an append-only JSONL log in real time — the way a live agent would append events as it works. `hcol walk f.jsonl --live` / `serve f.jsonl --live` attach a **`TailReader`** that follows the file: each `release` reads the bytes appended since last call, splits complete lines (a half-written trailing line stays buffered), folds each into the projection, and flips `done?` on an `eof` marker. It **duck-types the `Feed`** (`release(elapsed, into:)`/`log`/`done?`), so `Cascade#tick` and `Web::App#pump` drive it unchanged — `elapsed` is ignored (events arrive on their own, not "when due"). The load-bearing reframe: concurrency lives **between processes**, mediated by the append-only file, so the in-memory `EventLog` stays single-writer and needs **no mutex** — the thread-safety the STATUS kept promising was only ever needed if you insisted on one shared in-memory log. A live log is also a valid snapshot (same JSONL; `eof` skipped by `load`), unifying layers 16↔17. Shared `Persistence.line_for`/`parse_line`/`eof_line`. Verified two-process (producer + tailing consumer): the phase advances editing→testing→reviewing and `done?` trips on eof. 7 specs. |
 | `e5977b8` | **16** — **persistence (JSONL)**: the event log serializes to disk (one JSON object per line, seq order = replay order) and replays on load — the hügel "the mound persists" step. `Persistence.dump/load` + `hcol save <session\|sessions> f.jsonl`; a `.jsonl` path to `explore/walk/serve/json` reloads it (graph re-projected from the log, root = the first `:node` event). The load-bearing piece is a **symbol/Time-faithful `Codec`**: JSON drops Ruby Symbols (edge/evidence kinds, a Session's `:phase` — a *string* there silently kills phase biasing) and Time (`observed_at`, drives decay). All-symbol-keyed hashes stay readable plain objects and re-symbolize on load; a mixed/string-keyed hash (a diff's `hunks`, keyed by file path) falls back to a tagged `$map` pair-list so key *types* survive; symbol values → `$sym`, Time → `$time` (via `to_r`, exact instant). So replay-from-disk is *behaviorally* identical to in-memory — verified: a reloaded frozen session's `:phase` is still `:reviewing`, so its auto mode resolves to `reviewer`. `session_context` now keys on the `:phase` property (not the magic arg `"session"`), so a loaded session drives modes too. `sessions_graph` gained an optional `graph:` seam so a log-backed snapshot captures every event. 9 specs. |
 | `0ad2737` | **1** — property-graph substrate (Node, Observation, Edge=fold w/ confidence+maturity+provenance, Graph), evidence model w/ decay on an injected clock, confidence+recency Tuner, ColumnBuilder, in-memory fixture, text renderer, `hcol explore` |
@@ -178,9 +185,12 @@ web/                    the second front-end — a renderer peer that emits data
                         Optional feed: + clock: makes it LIVE: pump releases due events per request
                         (elapsed = clock−start); version/done? drive the client poll (the web Cascade#tick)
   server.rb             zero-dep raw-TCPServer HTTP. pure respond(method,path,query) router (socket-free
-                        testable, pumps a live app first) + socket loop; `/` = inline columns client,
-                        `/panel?id=&mode=` = JSON, `/state` = {version,done}. Client polls /state when LIVE
-                        and re-fetches open columns on a version bump (growth + phase-driven auto re-resolve)
+                        testable, pumps a per-request app first) + socket loop; `/` = inline columns client,
+                        `/panel?id=&mode=` = JSON, `/state` = {version,done}, `/events` = SSE stream. Two
+                        modes: Server.new(app) = one shared app, single-threaded (static / Feed live, /state
+                        poll); Server.new(app_factory:, streaming:true) = thread-per-connection, a fresh app
+                        (own log tail) per connection = lock-free, and /events pushes {version,done} as the
+                        log grows. Client: STREAM flag picks EventSource('/events') over the /state poll
 renderers/
   text.rb               single column (maturity glyph, confidence bar, rank reason); fixed width
   detail.rb             the inspector: node identity/props + relating edge(s) + confidence math per
@@ -264,6 +274,11 @@ same column without recompute.
   still tick at `POLL_INTERVAL`). It buffers a partial trailing line, but does **not** handle log
   *rotation/truncation* (if the file shrinks below the offset it silently reads nothing). Fine for the
   single-writer append-only demo; a real long-running tail would want inotify/rotation handling.
+- **Streaming server is thread-per-connection, uncapped** — the file-tail `serve --live` spawns a thread
+  per connection (needed so a long-lived `/events` stream doesn't block `/panel`), with no pool/limit, and
+  each `/panel` request re-folds the whole log into a fresh projection (lock-free, but O(log) per request).
+  Both are fine for a single-user probe; a real deployment would want a thread cap + a shared read-through
+  cache. The non-streaming serve (static / `Feed` live) is unchanged: single-threaded, one shared app.
 - **The producer is still the demo script** — `hcol produce` replays `AgentSession`'s timed script; a
   *real* external agent appending to the log (via a hook/bridge) is the next step (the transport — a
   file — is already proven). And the pull providers (fs/git/ruby) still don't record into a log, so only
@@ -322,9 +337,9 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
 - **Real async producer — DONE out-of-process (layer 17).** A separate process (`hcol produce`) appends
   to an append-only JSONL log; `TailReader` follows it (`walk/serve --live`). Concurrency is between
   processes, so no mutex was needed — the "thread-safety on `EventLog#append`" this bullet used to
-  demand turned out to be avoidable by making the *file* the shared state. Remaining follow-ons: **SSE**
-  (push the tail to the browser instead of the `/state` poll — each connection projects the read-only log
-  independently, so still lock-free); a **real external agent** as the producer (a Claude Code hook or a
+  demand turned out to be avoidable by making the *file* the shared state. **SSE is also DONE (layer 18)**
+  — the file-tail serve pushes over `/events`, thread-per-connection, each connection lock-free on its own
+  log tail. Remaining follow-ons: a **real external agent** as the producer (a Claude Code hook or a
   small bridge appending events) in place of the demo script; and, if an in-process producer is ever
   genuinely wanted, *that* is when the mutex/thread-safety question returns — deliberately not paid for now.
 - **Providers feeding the log.** The pull providers (filesystem/git/ruby) don't yet record into a
@@ -342,13 +357,14 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
 - **Auto-mode feel.** Worth living with to judge the default picks (`SourceFile`→`default`,
   `ProposedChange`→`diff`) and the phase→mode mappings, and whether re-descending should remember a
   pinned tab (today it reopens on auto).
-- **Deepen the web client (layers 13–15 follow-ons).** Renders, descends, content tabs, **and now
-  grows live** (layer 15, via request-driven polling). Remaining, each localized: **true SSE** — swap
-  the `/state` poll for a pushed `text/event-stream` (wants a threaded server + `EventLog` thread-safety,
-  so pair it with the real async producer); **shareable cascade state** — encode the trail in the URL so
-  a walk is linkable; **the dock** — the client shows `detail`/`reason` but not the full-width hunk dock
-  the TUI has; **pin/Tab parity** — a pinned tab survives a live refresh but not yet a re-descend. None
-  are load-bearing; they deepen the probe. The data contract (`Serializer`) is the part that's locked.
+- **Deepen the web client (layers 13–15 follow-ons).** Renders, descends, content tabs, grows live
+  (layer 15 poll), **and now pushes over SSE** (layer 18, the file-tail serve). Remaining, each localized:
+  **shareable cascade state** — encode the trail in the URL so a walk is linkable; **the dock** — the
+  client shows `detail`/`reason` but not the full-width hunk dock the TUI has; **pin/Tab parity** — a
+  pinned tab survives a live refresh but not yet a re-descend; **SSE for the `Feed` demo** — `serve
+  session --live` still polls (the in-memory timeline isn't per-connection projectable); **thread hygiene**
+  — the streaming server is thread-per-connection with no cap (fine for a probe, not for many clients).
+  None are load-bearing; they deepen the probe. The data contract (`Serializer`) is the part that's locked.
 - **Scoping lens / "session-only" lens** — `only:`/`hide:` scope is built but unused by any preset;
   a session lens that dims code-graph noise is now a concrete want.
 - **Tune lens preset constants**; **lens label in the static renderer**; **other-language code

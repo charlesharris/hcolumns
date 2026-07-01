@@ -17,13 +17,28 @@ module HColumns
     # testable without binding a port.
     class Server
       STATUS_TEXT = { 200 => "OK", 404 => "Not Found", 405 => "Method Not Allowed" }.freeze
+      STREAM_POLL = 0.3 # seconds between SSE pushes while a stream is open
 
       attr_reader :host, :port
 
-      def initialize(app, host: "127.0.0.1", port: 4567)
-        @app = app
+      # Two ways in. `Server.new(app)` holds one shared App (static serve, or the
+      # in-memory Feed live demo pumped per request — single-threaded, /state poll).
+      # `Server.new(app_factory:, streaming: true)` builds a *fresh* App per
+      # connection from the factory: each connection projects its own tail of the
+      # shared read-only log, so concurrent connections (a long-lived /events stream
+      # beside /panel fetches) share no mutable state and need no lock.
+      def initialize(app = nil, host: "127.0.0.1", port: 4567, app_factory: nil, streaming: false)
+        @app_factory = app_factory || -> { app }
+        @streaming = streaming
         @host = host
         @port = port
+        sample = @app_factory.call # a representative app for the shell (root id + flags)
+        @root_id = sample.root_id
+        @live = sample.live?
+      end
+
+      def live?
+        @live
       end
 
       # (method, path, query-hash) -> [status, content_type, body]. The only
@@ -33,15 +48,16 @@ module HColumns
       def respond(method, path, query)
         return [405, "text/plain", "method not allowed\n"] unless method == "GET"
 
-        @app.pump if @app.live?
+        app = @app_factory.call
+        app.pump if app.live?
 
         case path
         when "/" then [200, "text/html; charset=utf-8", index_html]
-        when "/root" then json_response(@app.root)
-        when "/state" then json_response({ version: @app.version, done: @app.done? })
+        when "/root" then json_response(app.root)
+        when "/state" then json_response({ version: app.version, done: app.done? })
         when "/panel"
           id = query["id"]
-          json_response(id && @app.panel(id, mode: query["mode"]),
+          json_response(id && app.panel(id, mode: query["mode"]),
                         missing: { error: "no such node", id: id })
         else
           [404, "text/plain", "not found\n"]
@@ -54,25 +70,62 @@ module HColumns
         server = TCPServer.new(@host, @port)
         @port = server.addr[1]
         yield self if block_given?
-        loop { serve_one(server) }
+        # A streaming server holds /events connections open, so each connection gets
+        # its own thread; otherwise the accept loop would block on the first stream.
+        # The static/Feed server has only short requests and stays single-threaded.
+        loop do
+          socket = server.accept
+          @streaming ? Thread.new { handle(socket) } : handle(socket)
+        end
       ensure
         server&.close
       end
 
       private
 
-      def serve_one(server)
-        socket = server.accept
+      def handle(socket)
         method, target = parse_request(socket)
-        if method
-          path, query = split_target(target)
+        return unless method
+
+        path, query = split_target(target)
+        if @streaming && method == "GET" && path == "/events"
+          stream_events(socket)
+        else
           status, type, body = respond(method, path, query)
           write_response(socket, status, type, body)
         end
       rescue StandardError
-        # a single malformed connection shouldn't take the server down
+        # a single malformed/aborted connection shouldn't take the server (or a
+        # connection thread) down
       ensure
         socket&.close
+      end
+
+      # Server-Sent Events: a long-lived connection that projects its OWN tail of
+      # the shared read-only log (no shared mutable state → no lock) and pushes a
+      # compact {version, done} frame whenever the log grows — the push form of the
+      # /state poll. The client re-fetches its open /panel columns on each frame.
+      def stream_events(socket)
+        socket.write("HTTP/1.1 200 OK\r\n" \
+                     "Content-Type: text/event-stream\r\n" \
+                     "Cache-Control: no-cache\r\n" \
+                     "Connection: keep-alive\r\n\r\n")
+        socket.flush
+        app = @app_factory.call
+        last = nil
+        loop do
+          app.pump if app.live?
+          version = app.version
+          done = app.done?
+          if version != last || done
+            socket.write("data: #{JSON.generate(version: version, done: done)}\n\n")
+            socket.flush
+            last = version
+          end
+          break if done
+
+          sleep(STREAM_POLL)
+        end
       end
 
       def parse_request(socket)
@@ -108,7 +161,9 @@ module HColumns
       end
 
       def index_html
-        INDEX_HTML.sub("__ROOT_ID__", @app.root_id.to_s).sub("__LIVE__", @app.live?.to_s)
+        INDEX_HTML.sub("__ROOT_ID__", @root_id.to_s)
+                  .sub("__LIVE__", @live.to_s)
+                  .sub("__STREAM__", @streaming.to_s)
       end
 
       # The whole client, inline. Single-quoted heredoc so the JS `${}` template
@@ -193,6 +248,7 @@ module HColumns
         <script>
         const ROOT_ID = "__ROOT_ID__";
         const LIVE = __LIVE__;
+        const STREAM = __STREAM__;
         const board = document.getElementById('board');
         const dock = document.getElementById('dock');
         const columns = []; // {id, mode} per open column, parallel to board.children
@@ -324,8 +380,21 @@ module HColumns
           b.className = 'live' + (pulsing ? ' on' : '');
         }
 
+        // Live via SSE (the file-tail server): the server pushes a {version, done}
+        // frame whenever the log grows — the push form of pollLive. Same reaction:
+        // re-fetch the open columns on a version bump, stop on done. The browser
+        // reconnects on a dropped stream on its own.
+        function connectSSE() {
+          const es = new EventSource('/events');
+          es.onmessage = (e) => {
+            const s = JSON.parse(e.data);
+            if (s.version !== liveVersion) { liveVersion = s.version; refreshOpen(); }
+            if (s.done) { setBadge('✓ session complete', false); es.close(); }
+          };
+        }
+
         openColumn(ROOT_ID, null, 0).then(() => {
-          if (LIVE) { setBadge('● live', true); pollLive(); }
+          if (LIVE) { setBadge('● live', true); STREAM ? connectSSE() : pollLive(); }
         });
         </script>
         </body>
