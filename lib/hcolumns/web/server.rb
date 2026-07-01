@@ -200,6 +200,7 @@ module HColumns
             flex: 0 0 24em; min-width: 24em; overflow: auto;
             border-right: 1px solid #262b36; padding: 6px 0;
           }
+          .col.blamecol { flex-basis: 48em; min-width: 48em; } /* blame wants room */
           .col-head {
             padding: 4px 12px 8px; color: #e6edf3; font-weight: 600;
             position: sticky; top: 0; background: #14161c;
@@ -233,6 +234,14 @@ module HColumns
           .glyph { color: #d2a8ff; width: 1em; flex: 0 0 auto; }
           .label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
           .bar { color: #3fb950; font-size: 10px; letter-spacing: -1px; flex: 0 0 auto; }
+          /* blame rows: a muted sha column + the code line (indentation preserved) */
+          .item.blame { gap: 12px; }
+          .item.blame .sha { color: #6e7681; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+          .item.blame.uncommitted .sha { color: #d29922; }
+          .item.blame .code {
+            flex: 1 1 auto; white-space: pre; overflow: hidden;
+            text-overflow: ellipsis; color: #adbac7;
+          }
           #dock {
             flex: 0 0 auto; max-height: 30vh; overflow: auto;
             border-top: 1px solid #262b36; background: #0f1116;
@@ -292,7 +301,7 @@ module HColumns
 
         function renderColumn(panel, depth) {
           const col = document.createElement('div');
-          col.className = 'col';
+          col.className = 'col' + (panel.mode === 'blame' ? ' blamecol' : '');
 
           const head = document.createElement('div');
           head.className = 'col-head';
@@ -325,11 +334,21 @@ module HColumns
             });
             (s.items || []).forEach(it => {
               const row = document.createElement('div');
-              row.className = 'item';
-              row.innerHTML =
-                `<span class="glyph">${esc(it.glyph || '•')}</span>` +
-                `<span class="label">${esc(it.label)}</span>` +
-                `<span class="bar">${bar(it.confidence)}</span>`;
+              // Blame rows read fugitive-style: a muted sha column + the code line;
+              // the author/date/summary lives in the dock on select. Other items
+              // keep the glyph + label + confidence-bar layout.
+              if (panel.mode === 'blame') {
+                row.className = 'item blame' + (it.target_id ? '' : ' uncommitted');
+                row.innerHTML =
+                  `<span class="sha">${esc(it.glyph || '')}</span>` +
+                  `<span class="code">${esc(it.label)}</span>`;
+              } else {
+                row.className = 'item';
+                row.innerHTML =
+                  `<span class="glyph">${esc(it.glyph || '•')}</span>` +
+                  `<span class="label">${esc(it.label)}</span>` +
+                  `<span class="bar">${bar(it.confidence)}</span>`;
+              }
               row.onclick = () => {
                 selectItem(row, it);
                 if (it.target_id) openColumn(it.target_id, null, depth + 1);

@@ -30,15 +30,89 @@ module HColumns
       end
 
       # A commit's diff (with --stat) for the `gitdiff` content facet — bounded to
-      # `limit` lines so a sprawling change doesn't flood the panel. Pure read.
-      def self.show(repo, sha, limit: 600)
-        out, _err, status = Open3.capture3("git", "-C", repo, "show", "--stat", "-p", "--no-color", sha)
+      # `limit` lines so a sprawling change doesn't flood the panel. Pass `path` to
+      # scope the diff to a single file (the blame → file-scoped-diff flow); nil is
+      # the whole commit (the zoom-out). Pure read.
+      def self.show(repo, sha, path: nil, limit: 600)
+        args = ["show", "--stat", "-p", "--no-color", sha]
+        args += ["--", path] if path
+        out, _err, status = Open3.capture3("git", "-C", repo, *args)
         return ["(diff unavailable)"] unless status.success? && !out.strip.empty?
 
         lines = out.split("\n")
         return lines if lines.size <= limit
 
         lines.first(limit) + ["… (#{lines.size - limit} more lines truncated)"]
+      end
+
+      # Per-line blame (vim-fugitive style): each source line tagged with the commit
+      # that last touched it. One `--porcelain` call gives the sha per line plus each
+      # commit's author/summary/time (only on its first appearance — accumulated in
+      # `meta`). Returns [{ sha:, lineno:, text:, author:, summary:, time: }], bounded.
+      # Uncommitted (working-tree) lines carry the all-zero sha.
+      def self.blame(repo, path, limit: 4000)
+        out, _err, status = Open3.capture3("git", "-C", repo, "blame", "--porcelain", "--", path)
+        return [] unless status.success?
+
+        parse_blame(out, limit: limit)
+      end
+
+      def self.parse_blame(out, limit:)
+        rows = []
+        meta = Hash.new { |h, k| h[k] = {} }
+        cur = nil
+        out.each_line do |raw|
+          line = raw.chomp
+          if line.start_with?("\t")
+            rows << cur.merge(text: line[1..], **meta[cur[:sha]]) if cur
+            cur = nil
+            break if rows.size >= limit
+          elsif cur.nil? && (m = line.match(/\A([0-9a-f]{40})\s+\d+\s+(\d+)/))
+            cur = { sha: m[1], lineno: m[2].to_i }
+          elsif cur
+            key, _sep, value = line.partition(" ")
+            meta[cur[:sha]][:author] = value if key == "author"
+            meta[cur[:sha]][:summary] = value if key == "summary"
+            meta[cur[:sha]][:time] = Time.at(value.to_i) if key == "author-time"
+          end
+        end
+        rows
+      end
+
+      UNCOMMITTED = ("0" * 40)
+
+      def self.committed?(sha)
+        sha && sha != UNCOMMITTED
+      end
+
+      # Cheap "is this path inside a git work-tree?" — walks up for a .git entry, no
+      # subprocess (so a `blame` tab's applies? check stays fast). repo_root/show/
+      # blame do the real git work only when the tab is actually built.
+      def self.in_repo?(path)
+        dir = File.expand_path(File.directory?(path) ? path : File.dirname(path))
+        loop do
+          return true if File.exist?(File.join(dir, ".git"))
+
+          parent = File.dirname(dir)
+          return false if parent == dir
+
+          dir = parent
+        end
+      end
+
+      # Shared node builders, so a Commit / CommitFile materialized from a facet
+      # (blame, the diff zoom-out) has the exact identity + properties the provider
+      # stamps during expansion — reach the same node either way.
+      def self.commit_node(repo, sha, subject: nil, author: nil)
+        Node.new(type: :Commit, identity: { scheme: "git.commit", key: sha },
+                 properties: { name: "#{sha[0, 7]} #{subject}".strip, sha: sha,
+                               subject: subject, author: author, repo: repo })
+      end
+
+      def self.commit_file_node(repo, sha, path, rel:, subject: nil, author: nil)
+        Node.new(type: :CommitFile, identity: { scheme: "git.commitfile", key: "#{sha}\x1f#{rel}" },
+                 properties: { name: "#{sha[0, 7]} · #{rel}", sha: sha, repo: repo, path: path,
+                               rel: rel, subject: subject, author: author })
       end
 
       def initialize(repo_root)
@@ -229,11 +303,7 @@ module HColumns
       end
 
       def commit_node(meta)
-        Node.new(
-          type: :Commit, identity: { scheme: "git.commit", key: meta[:sha] },
-          properties: { name: "#{short(meta[:sha])} #{meta[:subject]}".strip, sha: meta[:sha],
-                        subject: meta[:subject], author: meta[:author], repo: @root }
-        )
+        self.class.commit_node(@root, meta[:sha], subject: meta[:subject], author: meta[:author])
       end
 
       def branch_node(branch)

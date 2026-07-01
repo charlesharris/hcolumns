@@ -466,7 +466,10 @@ module HColumns
 
         in walk, each column has tabs (modes) for its node: an auto mode by node type
         plus alternatives — Tab cycles them, i jumps to the details tab (data + how it
-        got here + confidence math). A ProposedChange opens on a diff facet.
+        got here + confidence math). A ProposedChange opens on a diff facet. A file in a
+        git repo has a `blame` tab: each line tagged with the commit that last touched
+        it — descend a line to that commit's change to the file (a scoped diff), then
+        the "full commit" row to zoom out to the whole diff + its history.
 
         lens flags (on explore/walk):
           --role NAME                #{Lens.names.join(' | ')}

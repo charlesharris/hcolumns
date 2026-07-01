@@ -185,11 +185,23 @@ module HColumns
         item = cascade.selected_entry
         return ["  (nothing selected)"] unless item
 
+        # Blame lines are cramped in a narrow column, so the full-width dock is where
+        # the blamed line reads: the code, then its commit (sha · author · date · summary).
+        return blame_dock(item) if cascade.active_mode&.name == :blame
+
         detail = cascade.selected_detail
         return detail.map { |line| "  #{line}" } if detail
 
         reason = item.reason && !item.reason.empty? ? "   #{item.reason}" : ""
         ["  #{item.label}#{reason}"]
+      end
+
+      def blame_dock(item)
+        meta = [item.glyph, item.reason].reject { |part| part.nil? || part.to_s.empty? }.join("   ")
+        lines = ["  #{item.label}"]
+        lines << "  #{meta}" unless meta.empty?
+        lines << "  → descend to this commit's change to the file" if item.target_id
+        lines
       end
 
       def clamp(lines, max)

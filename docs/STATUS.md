@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 162 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 168 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -42,13 +42,20 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > tail of the shared read-only log — so concurrent connections share no mutable state and need **no lock**
 > (layer 17's log-is-truth property extended to many in-process readers). Verified over real sockets: the
 > stream pushes version bumps 3→…→20 then `done:true`, and `/panel` serves *concurrently* while `/events`
-> is held open. The in-memory `Feed` demo (`serve session --live`) stays on `/state` polling.
+> is held open. The in-memory `Feed` demo (`serve session --live`) stays on `/state` polling →
+> **git exploration — per-line blame (refocus)**: priority shifted back to *exploring data sources*
+> (git/fs) over the live-agent arc, sharpening the **clients** and the server data behind them. A file in a
+> git repo gets a **`blame` tab**: each line tagged with the commit that last touched it (vim-fugitive
+> style), every line a focusable item → a **`CommitFile`** node → its **file-scoped diff**, with **ZOOM OUT**
+> to the full commit (unscoped diff + history). The whole loop — open file → blame → jump to the commit
+> that changed a line → diff → zoom out — walks on the existing git substrate. Both clients rendered for it
+> (web: sha column · code · author-in-dock; TUI: full-width dock reads the blamed line + its commit).
 >
 > **Pick up next (one of):**
-> a **real external agent** appending to the log (a hook/bridge instead of the demo `produce`) · a file's
-> *latest* diff in git-context (a SourceFile `gitdiff`) · **goal biases *ranking*** (the "soil" step into
-> the tuner) · **`:retract`/undo** (frozen-at-seq-K and undo are the natural next log features) · **deepen
-> the web client** (a real cascade-state URL). Trade-offs in
+> **branch/history browsing polish** (a linear log facet; the repo-root entry experience) · **shareable
+> cascade-state URLs** (encode the trail so a walk is linkable) · a file's *latest* diff in git-context ·
+> **goal biases *ranking*** (the "soil" step into the tuner) · a **real external agent** appending to the
+> log (a hook/bridge instead of `produce`). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -86,6 +93,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _pending_ | **19** — **git exploration: per-line blame → file-scoped diff → zoom-out** (vim-fugitive-style). A **refocus on exploration** (git/fs as the subject) over the live-agent arc. A file in a git repo gets a **`blame` tab** (`BlameMode`): one `git blame --porcelain` call tags each line with the commit that last touched it; every line is a *focusable item* whose target is a new **`CommitFile`** node (that commit's change to *this* file). Descend a line → its **file-scoped diff** (`git show sha -- path`, auto mode), carrying two **ZOOM OUT** items — **▲ full commit** (→ the materialized `Commit`, the whole unscoped diff + `PARENT`/history) and **▤ current file**. So the whole fugitive loop — open file → blame → jump to the commit that changed a line → scoped diff → zoom out — is walkable, mostly on the existing git substrate (commits/branches/diffs were already there). `GitDiffMode` broadened to `Commit`+`CommitFile` (scopes on the node's `:path`). The one rule bent: `BlameMode` **materializes** the `CommitFile`/`Commit` nodes its lines point at (a lightweight expansion — nodes, not a per-line edge explosion), the one place a facet writes to the graph. Cheap `Git.in_repo?` (upward `.git` walk, no subprocess) gates the tab. **Both clients polished**: the web renders blame fugitive-style (muted sha column · code, wider column, author/date in the dock) and the TUI uses the full-width dock to read the blamed line + its commit (sha · author · date · summary). Shared `Git.commit_node`/`commit_file_node`/`blame`/`parse_blame`/`show(path:)`. 6 specs. |
 | `9db3af8` | **18** — **SSE: push the tail to the browser (lock-free)**. The file-tail web serve stops *polling* `/state` and *pushes* over `text/event-stream`. The load-bearing consequence: a long-lived `/events` stream can't share the single-threaded accept loop, so the server goes **thread-per-connection** — and to stay lock-free (the choice made *with* Charris), each connection builds its **own** `App` tailing the shared read-only log (`Server.new(app_factory:, streaming: true)`), so a stream + concurrent `/panel` fetches share no mutable state and need no mutex (layer 17's log-is-truth property extended to many in-process readers; the `/panel` cost is re-folding the log per request, negligible at demo scale). New `/events` route (held open, pushes `{version, done}` whenever the log grows, closes on `eof`); `stream_events` bypasses the pure `respond` router (which stays `[status,type,body]` for the short routes). Client gains a `STREAM` flag → `EventSource('/events')` in place of the 700ms poll, same reaction (re-fetch open columns on a version bump, stop on done). The in-memory `Feed` demo (`serve session --live`) stays single-threaded on `/state` polling. Non-streaming serve byte-identical. Verified over real sockets (version 3→…→20 then done; `/panel` concurrent with an open stream). 3 specs. |
 | `fee683d` | **17** — **real async producer (out-of-process log-tail)**: the live demo's producer stops being a wall-clock-*polled* `Feed` and becomes a genuinely separate **process**. `hcol produce <session\|sessions> f.jsonl` (`LogProducer`) replays the timed script into an append-only JSONL log in real time — the way a live agent would append events as it works. `hcol walk f.jsonl --live` / `serve f.jsonl --live` attach a **`TailReader`** that follows the file: each `release` reads the bytes appended since last call, splits complete lines (a half-written trailing line stays buffered), folds each into the projection, and flips `done?` on an `eof` marker. It **duck-types the `Feed`** (`release(elapsed, into:)`/`log`/`done?`), so `Cascade#tick` and `Web::App#pump` drive it unchanged — `elapsed` is ignored (events arrive on their own, not "when due"). The load-bearing reframe: concurrency lives **between processes**, mediated by the append-only file, so the in-memory `EventLog` stays single-writer and needs **no mutex** — the thread-safety the STATUS kept promising was only ever needed if you insisted on one shared in-memory log. A live log is also a valid snapshot (same JSONL; `eof` skipped by `load`), unifying layers 16↔17. Shared `Persistence.line_for`/`parse_line`/`eof_line`. Verified two-process (producer + tailing consumer): the phase advances editing→testing→reviewing and `done?` trips on eof. 7 specs. |
 | `e5977b8` | **16** — **persistence (JSONL)**: the event log serializes to disk (one JSON object per line, seq order = replay order) and replays on load — the hügel "the mound persists" step. `Persistence.dump/load` + `hcol save <session\|sessions> f.jsonl`; a `.jsonl` path to `explore/walk/serve/json` reloads it (graph re-projected from the log, root = the first `:node` event). The load-bearing piece is a **symbol/Time-faithful `Codec`**: JSON drops Ruby Symbols (edge/evidence kinds, a Session's `:phase` — a *string* there silently kills phase biasing) and Time (`observed_at`, drives decay). All-symbol-keyed hashes stay readable plain objects and re-symbolize on load; a mixed/string-keyed hash (a diff's `hunks`, keyed by file path) falls back to a tagged `$map` pair-list so key *types* survive; symbol values → `$sym`, Time → `$time` (via `to_r`, exact instant). So replay-from-disk is *behaviorally* identical to in-memory — verified: a reloaded frozen session's `:phase` is still `:reviewing`, so its auto mode resolves to `reviewer`. `session_context` now keys on the `:phase` property (not the magic arg `"session"`), so a loaded session drives modes too. `sessions_graph` gained an optional `graph:` seam so a log-backed snapshot captures every event. 9 specs. |
@@ -154,8 +162,10 @@ mode.rb            Mode#panel(node,ws,now)->Panel + a name->mode registry. LensM
                    a panel; DetailFacet = inspector as a panel (items = the node's edges); DiffFacet =
                    a ProposedChange as a changeset (the first renderer-carrying facet)
 content_modes.rb   content facets (a node's contents, not relations; derived views, not graph-folded):
-                   SourceMode (file text, numbered/bounded), GitDiffMode (Commit -> git show), OutputMode
-                   (TestRun/LogLine -> captured :output). Each applies? gates its tab to real content
+                   SourceMode (file text, numbered/bounded), BlameMode (per-line blame; each line an item
+                   -> a CommitFile; materializes those nodes), GitDiffMode (Commit -> full git show, or a
+                   CommitFile -> file-scoped diff + ZOOM OUT items), OutputMode (TestRun/LogLine ->
+                   captured :output). Each applies? gates its tab to real content
 mode_resolver.rb   node type -> ranked [Mode] (head = auto). A session's phase floats PHASE_PREFERENCE
                    modes to the head (filtered by Mode#applies?), :details always kept. Keystone of the UI
 session_context.rb the session a walk sits in; reads the current phase off the Session node (event-
@@ -174,7 +184,10 @@ providers/
   filesystem.rb         CONTAINS, one dir level at a time; skips hidden/.git/node_modules/...
   naming_rules.rb       source<->test PAIR by string transform (heuristic; misses flat spec/ dirs)
   git.rb                two-faced: file → CO_CHANGED_WITH/CHANGED_BY; repo root → HAS_BRANCH/HEAD,
-                        Branch → POINTS_AT, Commit → PARENT/CHANGED/AUTHORED_BY. Bounded as before
+                        Branch → POINTS_AT, Commit → PARENT/CHANGED/AUTHORED_BY. Bounded as before.
+                        Also: blame(repo,path) (--porcelain, per-line sha+author+summary) + parse_blame;
+                        show(repo,sha,path:) scopes a diff to one file; in_repo? (cheap .git walk);
+                        commit_node/commit_file_node builders shared with the blame facet
   ruby_code.rb          DEFINES/DEPENDS_ON/REFERENCES via Ripper AST; nested Analyzer walks the
                         sexp keeping a module/class scope stack; lazy cached repo const index
                         (MAX_INDEX_FILES=2000) backs cross-file REFERENCES + DEFINED_IN back-edge
@@ -224,6 +237,10 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol explore .              # repo root: CONTAINS + HAS_BRANCH + HEAD (the git entrypoint)
 
 # lenses — same graph, different surface
+# per-line blame (vim-fugitive style): open a file, Tab to `blame`, descend a line
+./exe/hcol walk lib/hcolumns/cli.rb          # Tab to the `blame` tab; each line → the commit that touched it
+                                             # descend a line → file-scoped diff → "full commit" row zooms out
+
 ./exe/hcol explore . --role git              # lift commits/branches, dim files
 ./exe/hcol explore lib/hcolumns/cascade.rb --role reviewer   # strict: structure-first, weak edges hidden
 ./exe/hcol explore . --role explorer --floor 0.6             # speculative + a confidence floor

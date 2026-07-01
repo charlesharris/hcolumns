@@ -52,7 +52,8 @@ module HColumns
         modes[:details] = DetailFacet.new
         modes[:diff] = DiffFacet.new
         modes[:source] = SourceMode.new   # a file's text
-        modes[:gitdiff] = GitDiffMode.new # a commit's diff
+        modes[:blame] = BlameMode.new     # a file's per-line commit history
+        modes[:gitdiff] = GitDiffMode.new # a commit's (or a file's, scoped) diff
         modes[:output] = OutputMode.new   # a test run / log line's captured output
         modes
       end
