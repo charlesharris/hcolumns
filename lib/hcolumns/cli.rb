@@ -22,6 +22,7 @@ module HColumns
       when "inspect" then inspect_node(@argv.first)
       when "json" then emit_json(@argv.first)
       when "save" then save(@argv[0], @argv[1])
+      when "produce" then produce(@argv[0], @argv[1])
       when "serve" then serve(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
@@ -89,6 +90,7 @@ module HColumns
     def walk(arg)
       return walk_live_session if arg == "session" && @opts[:live]
       return walk_live_sessions if arg == "sessions" && @opts[:live]
+      return walk_live_file(File.expand_path(arg)) if @opts[:live] && log_path?(arg)
 
       workspace, node_id = target_for(arg, fixture_default: "repo/")
       unless node_id
@@ -120,6 +122,85 @@ module HColumns
       warn e.message
       warn "(the live session needs an interactive terminal)"
       1
+    end
+
+    # The out-of-process producer: replay the agent session into an append-only
+    # JSONL log in real time, the way a live agent would write events as it works.
+    # Run this in one terminal and `hcol walk <file> --live` (or serve) in another —
+    # the columns grow as lines land. They meet only at the file (single-writer
+    # preserved; no shared memory, no threads).
+    def produce(selector, path)
+      unless %w[session sessions].include?(selector) && path
+        warn "usage: hcol produce <session|sessions> <path.jsonl>"
+        return 1
+      end
+      script = producible_script(selector)
+      warn "producing #{selector} -> #{path} (#{script.size} events; Ctrl-C to stop)"
+      File.open(path, "w") { |io| LogProducer.new(script, io: io).run }
+      warn "done"
+      0
+    rescue Interrupt
+      warn "\nstopped"
+      0
+    end
+
+    # A timed [{ after:, kind:, payload: }] script for the producer. The session is
+    # already timed; the sessions index is instantaneous (all at t0), delivered live.
+    def producible_script(selector)
+      case selector
+      when "session" then Providers::AgentSession.script(now: now)
+      when "sessions"
+        log = EventLog.new
+        Providers::AgentSession.sessions_graph(now: now, graph: Graph.new(log: log))
+        log.events.map { |e| { after: 0.0, kind: e.kind, payload: e.payload } }
+      end
+    end
+
+    # Follow an append-only log a producer is writing: tail it into a projection
+    # and walk the growing cascade. The web analogue is live_web_file_app.
+    def walk_live_file(path)
+      reader = TailReader.new(path)
+      graph = Graph.new
+      root = await_root(reader, graph)
+      return no_events(path) unless root
+
+      workspace = Workspace.new(graph: graph, lens: lens)
+      cascade = Cascade.new(workspace, root, now: now, feed: reader,
+                            floor: @opts[:floor].to_f, session: session_context_for(graph, root))
+      TUI.new(cascade).run
+      0
+    rescue TUI::NoTTY => e
+      warn e.message
+      warn "(the live tail needs an interactive terminal)"
+      1
+    end
+
+    # Drain the tail until the log's root node lands (the producer writes it first),
+    # so we have something to open the first column on. Gives up after `timeout` so
+    # a walk with no producer running fails cleanly instead of hanging.
+    def await_root(reader, graph, timeout: 5.0)
+      deadline = now_wall + timeout
+      loop do
+        reader.release(into: graph)
+        root = Persistence.root_id(reader.log)
+        return root if root
+        return nil if now_wall > deadline
+
+        sleep 0.05
+      end
+    end
+
+    def now_wall
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def no_events(path)
+      warn "no events yet in #{path} — is a producer writing it? (try: hcol produce session #{path})"
+      1
+    end
+
+    def log_path?(arg)
+      arg&.end_with?(".jsonl")
     end
 
     # The phase-bearing session a walk sits in, so modes follow the agent's work.
@@ -225,6 +306,8 @@ module HColumns
       app =
         if @opts[:live] && %w[session sessions].include?(arg)
           live_web_app(arg)
+        elsif @opts[:live] && log_path?(arg)
+          live_web_file_app(File.expand_path(arg)) || (return no_events(arg))
         else
           static, node_id = web_app_for(arg, fixture_default: "repo/")
           return missing(arg) unless node_id
@@ -263,6 +346,18 @@ module HColumns
                      root_id: Providers::AgentSession.session_id, now: now,
                      session: session_context(graph), feed: feed)
       end
+    end
+
+    # A live web App tailing a producer's log: the browser's columns grow as the
+    # file grows (the web analogue of walk_live_file). nil if no root arrives.
+    def live_web_file_app(path)
+      reader = TailReader.new(path)
+      graph = Graph.new
+      root = await_root(reader, graph)
+      return nil unless root
+
+      Web::App.new(workspace: Workspace.new(graph: graph, lens: lens), root_id: root, now: now,
+                   session: session_context_for(graph, root), feed: reader)
     end
 
     # Builds [Web::App, root_id] for a node selector, wiring the session context
@@ -349,6 +444,10 @@ module HColumns
                                      snapshot a session's event log to disk (the mound persists)
           hcol explore|walk|serve <file.jsonl>
                                      reload a snapshot: the graph re-projects from the log
+          hcol produce <session|sessions> <file.jsonl>
+                                     out-of-process producer: append events to the log in real time
+          hcol walk <file.jsonl> --live    tail a producer's log; the cascade grows as events land
+          hcol serve <file.jsonl> --live   …same, in a browser (run `produce` in another terminal)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
           hcol serve session --live  …with the session streaming: columns grow in the browser as it works
           hcol nodes                 list nodes in the demo graph

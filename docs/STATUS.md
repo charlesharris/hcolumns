@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 152 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 159 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -27,12 +27,22 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > **persistence (JSONL)**: the event log serializes one-event-per-line to disk and replays on load
 > (`hcol save session f.jsonl` → `hcol walk f.jsonl`), so a session survives a restart — the hügel "the
 > mound persists" step. A symbol/Time-faithful codec keeps replay-from-disk *behaviorally* identical to
-> in-memory (`:phase` stays a Symbol, so phase-biasing still fires on a reload).
+> in-memory (`:phase` stays a Symbol, so phase-biasing still fires on a reload) →
+> **real async producer (out-of-process log-tail)**: a *separate process* appends events to an
+> append-only JSONL log in real time (`hcol produce session f.jsonl`) and a consumer *tails* it
+> (`hcol walk/serve f.jsonl --live`) — the columns grow as lines land. Concurrency lives **between
+> processes** (the file), so the in-memory log stays single-writer and needs **no mutex**: the log-is-truth
+> reframe dissolves the thread-safety the STATUS kept promising rather than paying for it. `TailReader`
+> duck-types the `Feed` (release/log/done?), so Cascade + Web::App drive it unchanged; a live log is also
+> a valid snapshot (same format, `eof` marker skipped). Verified two-process: the phase advances
+> editing→testing→reviewing under a tailing consumer.
 >
-> **Pick up next (one of):** the **real async producer** (a live agent appending to the `EventLog`; this
-> is when SSE + thread-safety get solved together) · a file's *latest* diff in git-context (a SourceFile `gitdiff`) · **goal
-> biases *ranking*** (the "soil" step into the tuner) · **`:retract`/undo** (the log is on disk now, so
-> frozen-at-seq-K and undo are the natural next log features) · **deepen the web client** (live `tick` over SSE, a real cascade-state URL). Trade-offs in
+> **Pick up next (one of):** **SSE** (push the tail to the browser as `text/event-stream` — now a clean
+> follow-on: each connection independently projects the read-only log, so still no shared-mutable lock) ·
+> a **real external agent** appending to the log (a hook/bridge instead of the demo `produce`) · a file's
+> *latest* diff in git-context (a SourceFile `gitdiff`) · **goal biases *ranking*** (the "soil" step into
+> the tuner) · **`:retract`/undo** (frozen-at-seq-K and undo are the natural next log features) · **deepen
+> the web client** (a real cascade-state URL). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -70,6 +80,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _pending_ | **17** — **real async producer (out-of-process log-tail)**: the live demo's producer stops being a wall-clock-*polled* `Feed` and becomes a genuinely separate **process**. `hcol produce <session\|sessions> f.jsonl` (`LogProducer`) replays the timed script into an append-only JSONL log in real time — the way a live agent would append events as it works. `hcol walk f.jsonl --live` / `serve f.jsonl --live` attach a **`TailReader`** that follows the file: each `release` reads the bytes appended since last call, splits complete lines (a half-written trailing line stays buffered), folds each into the projection, and flips `done?` on an `eof` marker. It **duck-types the `Feed`** (`release(elapsed, into:)`/`log`/`done?`), so `Cascade#tick` and `Web::App#pump` drive it unchanged — `elapsed` is ignored (events arrive on their own, not "when due"). The load-bearing reframe: concurrency lives **between processes**, mediated by the append-only file, so the in-memory `EventLog` stays single-writer and needs **no mutex** — the thread-safety the STATUS kept promising was only ever needed if you insisted on one shared in-memory log. A live log is also a valid snapshot (same JSONL; `eof` skipped by `load`), unifying layers 16↔17. Shared `Persistence.line_for`/`parse_line`/`eof_line`. Verified two-process (producer + tailing consumer): the phase advances editing→testing→reviewing and `done?` trips on eof. 7 specs. |
 | _pending_ | **16** — **persistence (JSONL)**: the event log serializes to disk (one JSON object per line, seq order = replay order) and replays on load — the hügel "the mound persists" step. `Persistence.dump/load` + `hcol save <session\|sessions> f.jsonl`; a `.jsonl` path to `explore/walk/serve/json` reloads it (graph re-projected from the log, root = the first `:node` event). The load-bearing piece is a **symbol/Time-faithful `Codec`**: JSON drops Ruby Symbols (edge/evidence kinds, a Session's `:phase` — a *string* there silently kills phase biasing) and Time (`observed_at`, drives decay). All-symbol-keyed hashes stay readable plain objects and re-symbolize on load; a mixed/string-keyed hash (a diff's `hunks`, keyed by file path) falls back to a tagged `$map` pair-list so key *types* survive; symbol values → `$sym`, Time → `$time` (via `to_r`, exact instant). So replay-from-disk is *behaviorally* identical to in-memory — verified: a reloaded frozen session's `:phase` is still `:reviewing`, so its auto mode resolves to `reviewer`. `session_context` now keys on the `:phase` property (not the magic arg `"session"`), so a loaded session drives modes too. `sessions_graph` gained an optional `graph:` seam so a log-backed snapshot captures every event. 9 specs. |
 | `0ad2737` | **1** — property-graph substrate (Node, Observation, Edge=fold w/ confidence+maturity+provenance, Graph), evidence model w/ decay on an injected clock, confidence+recency Tuner, ColumnBuilder, in-memory fixture, text renderer, `hcol explore` |
 | `8159860` | **2** — interactive Miller-column cascade: `Cascade` (pure nav state), `CascadeText` (side-by-side renderer), `TUI` (raw input, arrows/hjkl), `hcol walk` |
@@ -110,7 +121,15 @@ event_log.rb       append-only source of truth: append/version/since/fold/projec
                    a projection folded from it; :node + :observe events (:retract designed-in, deferred)
 persistence.rb     JSONL on disk: dump(log,io)/load(io) one event per line; root_id = first :node.
                    Codec round-trips what JSON drops — Symbols ($sym / plain object for all-symbol keys /
-                   $map pair-list for mixed keys) and Time ($time via to_r). Node/Observation <-> Hash
+                   $map pair-list for mixed keys) and Time ($time via to_r). Node/Observation <-> Hash.
+                   line_for/parse_line/eof_line = the per-line seam shared with the tail/producer
+tail_reader.rb     consumer of an out-of-process producer: follows an append-only JSONL log a separate
+                   process writes, folding new lines into a projection as they land. Buffers a partial
+                   trailing line; eof -> done?. Duck-types Feed (release/log/done?) — no mutex (the file
+                   is the only shared state; the in-memory log stays single-writer)
+log_producer.rb    the producer: replays a timed [{after:,kind:,payload:}] script into a JSONL log in
+                   real wall-clock time (injected clock/sleeper for deterministic tests), then an eof
+                   marker. `hcol produce session f.jsonl` in one terminal, `walk f.jsonl --live` in another
 tuner.rb           evidence math: score = w_conf·confidence + w_recency·recency; floor + evidence_mix
 lens.rb            base engine: tuner + relation_weights + optional scope; score/visible?/admits?/
                    with_floor; name→class registry (preset/cycle). Base IS the neutral :default lens
@@ -208,6 +227,11 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol save session /tmp/s1.jsonl        # dump the session's event log to disk (one event per line)
 ./exe/hcol walk /tmp/s1.jsonl                # reload it: the graph re-projects from the log, walkable
 ./exe/hcol json /tmp/s1.jsonl                # …reloaded phase (:reviewing) still drives the auto mode -> reviewer
+
+# real async producer — two processes meeting only at the file (no threads, no mutex)
+./exe/hcol produce session /tmp/live.jsonl   # terminal 1: a separate process appends events in real time
+./exe/hcol walk /tmp/live.jsonl --live       # terminal 2: tail it — the cascade grows as lines land
+./exe/hcol serve /tmp/live.jsonl --live      # …or in a browser (phase drives the auto mode live)
 ```
 
 Verified end-to-end (incl. PTY-driven interactive walks of the real repo). On a real file,
@@ -235,11 +259,15 @@ same column without recompute.
 ## 7. Known limitations / sharp edges
 
 - **Naming rule is heuristic** — lib↔spec transform misses flat `spec/` layouts (e.g. our own repo).
-- **Persistence is snapshot-only** — `hcol save` dumps a *whole* log and reload re-projects it, but
-  nothing *accretes* to disk live yet (no append-as-you-go log file, no auto-save on quit). The
-  next escalation is a file the `EventLog` tails/appends to as events arrive (pairs with the real
-  async producer). Also: the pull providers (fs/git/ruby) still don't record into a log, so only the
-  agent-session demo is snapshottable today; a real code walk isn't yet.
+- **Live tail is poll-based, and forgiving-not-bulletproof** — `TailReader` reopens the file each
+  `release` and reads from a byte offset (`IO.select` can't truly block on a regular file, so the loops
+  still tick at `POLL_INTERVAL`). It buffers a partial trailing line, but does **not** handle log
+  *rotation/truncation* (if the file shrinks below the offset it silently reads nothing). Fine for the
+  single-writer append-only demo; a real long-running tail would want inotify/rotation handling.
+- **The producer is still the demo script** — `hcol produce` replays `AgentSession`'s timed script; a
+  *real* external agent appending to the log (via a hook/bridge) is the next step (the transport — a
+  file — is already proven). And the pull providers (fs/git/ruby) still don't record into a log, so only
+  the agent-session demo is snapshottable/tailable today; a real code walk isn't yet.
 - **Git provider cost** — up to 2 git subprocess calls per file expansion; bounded but not cached.
 - **Ruby reference index** — cross-file `REFERENCES` triggers a one-time repo scan (parse every
   .rb, bounded at 2000 files) on first use; cached per Workspace, but the one un-lazy cost here.
@@ -291,10 +319,14 @@ deferred substrate work. **Pick one** (decide the load-bearing ones *with* Charr
   event referencing an observation's seq, recompute just that edge (local; the edge keeps its
   observation list). This is the *other* feature that justified the log (agent reject/undo); it
   also unlocks frozen-snapshot-at-seq-K (fold events `seq ≤ K`).
-- **Real async producer (vs the polled script).** The live demo's producer is a wall-clock-polled
-  `Feed`; a real agent appends asynchronously (a thread/socket/file-tail writing to the `EventLog`).
-  Swap is localized to the producer side; the consumer (TUI `tick`/`IO.select`) already handles
-  "the log grew." Will want thread-safety on `EventLog#append` then.
+- **Real async producer — DONE out-of-process (layer 17).** A separate process (`hcol produce`) appends
+  to an append-only JSONL log; `TailReader` follows it (`walk/serve --live`). Concurrency is between
+  processes, so no mutex was needed — the "thread-safety on `EventLog#append`" this bullet used to
+  demand turned out to be avoidable by making the *file* the shared state. Remaining follow-ons: **SSE**
+  (push the tail to the browser instead of the `/state` poll — each connection projects the read-only log
+  independently, so still lock-free); a **real external agent** as the producer (a Claude Code hook or a
+  small bridge appending events) in place of the demo script; and, if an in-process producer is ever
+  genuinely wanted, *that* is when the mutex/thread-safety question returns — deliberately not paid for now.
 - **Providers feeding the log.** The pull providers (filesystem/git/ruby) don't yet record into a
   log — attach a log to their graph (the 2b seam, already in `Graph`) so a real session's *code*
   context also participates in replay/undo. Not needed for the session demo; do it when undo wants it.

@@ -32,22 +32,48 @@ module HColumns
 
     # Replay a JSONL stream into a fresh EventLog. append() re-stamps seq from
     # position, so the persisted "seq" is only for human inspection — loading in
-    # line order reproduces it exactly.
+    # line order reproduces it exactly. An `eof` marker (a live producer writes one
+    # when its stream ends) is skipped, so a *live* log is also a valid snapshot.
     def load(io)
       log = EventLog.new
       io.each_line do |line|
-        line = line.strip
-        next if line.empty?
+        parsed = parse_line(line)
+        next if parsed.nil? || parsed == :eof
 
-        h = JSON.parse(line)
-        kind = h["kind"].to_sym
-        log.append(kind: kind, at: Codec.load(h["at"]), payload: payload_from_h(kind, h["payload"]))
+        log.append(kind: parsed[:kind], at: parsed[:at], payload: parsed[:payload])
       end
       log
     end
 
     def load_string(string)
       load(StringIO.new(string))
+    end
+
+    # One JSONL line -> { kind:, at:, payload: }; nil for a blank line; :eof for
+    # the end-of-stream marker. The seam the TailReader folds through.
+    def parse_line(line)
+      line = line.strip
+      return nil if line.empty?
+
+      h = JSON.parse(line)
+      return :eof if h["eof"]
+
+      kind = h["kind"].to_sym
+      { kind: kind, at: Codec.load(h["at"]), payload: payload_from_h(kind, h["payload"]) }
+    end
+
+    # Serialize a single event to a JSONL line — what a producer appends as the
+    # agent works (seq is left nil; the consumer re-stamps it on load). `at`
+    # defaults to the payload's observed_at (an Observation), else nil (a Node).
+    def line_for(kind:, payload:, at: :derive)
+      at = (payload.respond_to?(:observed_at) ? payload.observed_at : nil) if at == :derive
+      JSON.generate(entry_to_h(seq: nil, at: at, kind: kind, payload: payload))
+    end
+
+    # The end-of-stream marker: tells a TailReader the producer is finished (the
+    # web badge flips to "✓ complete"). Not an event — load() and fold() skip it.
+    def eof_line
+      JSON.generate({ "eof" => true })
     end
 
     # The log's entrypoint: the first node to come into being. Both the frozen
@@ -60,11 +86,15 @@ module HColumns
     # --- event <-> hash ---
 
     def event_to_h(event)
+      entry_to_h(seq: event.seq, at: event.at, kind: event.kind, payload: event.payload)
+    end
+
+    def entry_to_h(seq:, at:, kind:, payload:)
       {
-        "seq" => event.seq,
-        "at" => Codec.dump(event.at),
-        "kind" => event.kind.to_s,
-        "payload" => payload_to_h(event.kind, event.payload)
+        "seq" => seq,
+        "at" => Codec.dump(at),
+        "kind" => kind.to_s,
+        "payload" => payload_to_h(kind, payload)
       }
     end
 
