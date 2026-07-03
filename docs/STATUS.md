@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-03 · **Branch:** `main` · **Tests:** 183 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-03 · **Branch:** `main` · **Tests:** 193 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -57,7 +57,14 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > descends bead → file → blame → commit. Read via a **direct MySQL-wire connection** to the dolt
 > sql-server (hcolumns as an active *client*; endpoint resolved from `.beads` state, never assumed), a
 > `bead` facet renders the issue body, and the repo now dogfoods its own tracking (`bd`, prefix `hc`,
-> local shared server :3308).
+> local shared server :3308) →
+> **node flags (the first interaction event)**: the user's up/down/exclude/clear judgment on a node is a
+> `:flag` **event** — folded beside the evidence, never into it. Flags **bias the lens score** (Charris's
+> call: opinion layer only; confidence keeps reporting the untouched truth, the rank reason shows
+> `⚑down (charris)`, the inspector still shows excluded edges). Keys in both clients (`+ - x u`;
+> web via `/flag`), `hcol flag <path> <level>` for bulk, and the first **accreting on-disk log**:
+> flags append to `.hcolumns/flags.jsonl` as they happen and replay into the next walk — a judgment
+> made today shapes tomorrow's columns. Real walks are now log-backed (providers record as they expand).
 >
 > **Pick up next (one of):**
 > **beads slice 2** (reverse walk: file → which beads touch it; `ready`/`blocked` views — the DB has them
@@ -103,6 +110,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _(this commit)_ | **21** — **node flags: uprank/downrank/exclude as events, biasing rank only**. The feature Charris asked for after `.beads/interactions.jsonl` noise: flag any node and the judgment follows it everywhere. Two decisions shape it (his calls): **(1) flags are a bias layer** — `Lens#bias` multiplies the *score* (`up` ×1.5, `down` ×0.4), `exclude` hides at build time; edge **confidence is never touched**, the rank reason carries the visible `⚑level (by)`, and the details facet still shows excluded edges (opinion ≠ deletion). **(2) flag-as-event with the log plumbing** — a `:flag` event kind (the first *interaction* event; payload a plain hash, last-flag-wins so `:clear` is the undo), folded by `Graph#apply_flag` beside nodes/edges, replayed by `EventLog#fold`/`project`. **`FlagStore`** is the first accreting on-disk log: each flag appends one JSONL line to `.hcolumns/flags.jsonl` (Persistence codec, so `:level`/Time survive) and replays into the next session's graph — deliberately flags-only (provider observations re-derive from the world; persisting them would double-fold confidence). Real CLI walks now run a **log-backed graph** (the 2b seam, finally used for code) with the store attached. Driven from all three surfaces: TUI keys `+ - x u` → `Cascade#flag_selected` (re-ranks the walked path live), web `/flag?id=&level=` + the same keys on the selected item (re-fetches open columns), and `hcol flag <path> <level>` for bulk/scripted flagging. 10 specs; live-verified: `hcol flag Gemfile.lock down` from one process sinks it (⚑ visible, bar still 1.00) in a fresh `explore .`, exclude/clear round-trip. |
 | `22a9722` | **20** — **beads provider: the plan layer is the beads DB**. `Providers::Beads` walks a project's `bd` issue database (Yegge's beads, dolt-backed) as columns: repo root → `HAS_BEADS` → a `Beads` index → `HAS_BEAD` per issue (bounded `MAX_BEADS`, closed ranked last); a `Bead`'s dependency rows map to typed edges — `parent-child` → `HAS_CHILD`/`CHILD_OF`, `blocks` → `BLOCKS`/`BLOCKED_BY`, unknown kinds upcased — all `structure` 1.0 (declared facts in the DB). File links are two-tier by honesty: a `metadata` JSON file list is the agent's word → `TOUCHES` at `agent` (0.7); a path scraped from description/design prose → `inference` (0.3); both land on real `fs.path` nodes so the walk continues into source/blame/git. **Integration posture (decided with Charris): direct MySQL-wire client of the dolt sql-server** — pure-Ruby `ruby-mysql` as a *soft* dependency (`available?` gates on `require`; core stays zero-dep), one cached connection per beads root shared with the new `bead` content facet (issue body: description/design/acceptance/notes). Endpoint **resolved from repo state** (`.beads/metadata.json` database name; `config.yaml` shared-server flag → shared or repo port file), never assumed — the lesson of the orphaned-DB incident. A dead server warns + drops the connection (heals on the next walk), never crashes the cascade. Repo now **dogfoods its own tracking**: `bd` prefix `hc` on the local shared dolt server (:3308), the epic/slice beads carry the provider's own design notes. Specs run against a fake client (the `Client` duck-type), 15 examples; live-verified: `hcol explore .` shows `HAS_BEADS`, the epic column renders `HAS_CHILD`/`RELATED`/`TOUCHES`, the facet renders the body. |
 | `553663c` | **19** — **git exploration: per-line blame → file-scoped diff → zoom-out** (vim-fugitive-style). A **refocus on exploration** (git/fs as the subject) over the live-agent arc. A file in a git repo gets a **`blame` tab** (`BlameMode`): one `git blame --porcelain` call tags each line with the commit that last touched it; every line is a *focusable item* whose target is a new **`CommitFile`** node (that commit's change to *this* file). Descend a line → its **file-scoped diff** (`git show sha -- path`, auto mode), carrying two **ZOOM OUT** items — **▲ full commit** (→ the materialized `Commit`, the whole unscoped diff + `PARENT`/history) and **▤ current file**. So the whole fugitive loop — open file → blame → jump to the commit that changed a line → scoped diff → zoom out — is walkable, mostly on the existing git substrate (commits/branches/diffs were already there). `GitDiffMode` broadened to `Commit`+`CommitFile` (scopes on the node's `:path`). The one rule bent: `BlameMode` **materializes** the `CommitFile`/`Commit` nodes its lines point at (a lightweight expansion — nodes, not a per-line edge explosion), the one place a facet writes to the graph. Cheap `Git.in_repo?` (upward `.git` walk, no subprocess) gates the tab. **Both clients polished**: the web renders blame fugitive-style (muted sha column · code, wider column, author/date in the dock) and the TUI uses the full-width dock to read the blamed line + its commit (sha · author · date · summary). Shared `Git.commit_node`/`commit_file_node`/`blame`/`parse_blame`/`show(path:)`. 6 specs. |
 | `9db3af8` | **18** — **SSE: push the tail to the browser (lock-free)**. The file-tail web serve stops *polling* `/state` and *pushes* over `text/event-stream`. The load-bearing consequence: a long-lived `/events` stream can't share the single-threaded accept loop, so the server goes **thread-per-connection** — and to stay lock-free (the choice made *with* Charris), each connection builds its **own** `App` tailing the shared read-only log (`Server.new(app_factory:, streaming: true)`), so a stream + concurrent `/panel` fetches share no mutable state and need no mutex (layer 17's log-is-truth property extended to many in-process readers; the `/panel` cost is re-folding the log per request, negligible at demo scale). New `/events` route (held open, pushes `{version, done}` whenever the log grows, closes on `eof`); `stream_events` bypasses the pure `respond` router (which stays `[status,type,body]` for the short routes). Client gains a `STREAM` flag → `EventSource('/events')` in place of the 700ms poll, same reaction (re-fetch open columns on a version bump, stop on done). The in-memory `Feed` demo (`serve session --live`) stays single-threaded on `/state` polling. Non-streaming serve byte-identical. Verified over real sockets (version 3→…→20 then done; `/panel` concurrent with an open stream). 3 specs. |
@@ -145,6 +153,10 @@ graph.rb           nodes + edge projection; observe()/add_node() record to an op
                    apply_*(); apply_* fold without recording (the replay path); edges_from/into
 event_log.rb       append-only source of truth: append/version/since/fold/project(replay). Graph is
                    a projection folded from it; :node + :observe events (:retract designed-in, deferred)
+flag_store.rb      the accreting on-disk log for human judgments: each flag appends one JSONL line
+                   to .hcolumns/flags.jsonl, replay() folds them into the next session's graph.
+                   Flags-only by design — provider observations re-derive from the world; persisting
+                   them would double-fold probabilistic confidence on reload
 persistence.rb     JSONL on disk: dump(log,io)/load(io) one event per line; root_id = first :node.
                    Codec round-trips what JSON drops — Symbols ($sym / plain object for all-symbol keys /
                    $map pair-list for mixed keys) and Time ($time via to_r). Node/Observation <-> Hash.
@@ -264,6 +276,12 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol explore . --role git              # lift commits/branches, dim files
 ./exe/hcol explore lib/hcolumns/cascade.rb --role reviewer   # strict: structure-first, weak edges hidden
 ./exe/hcol explore . --role explorer --floor 0.6             # speculative + a confidence floor
+
+# flags — your judgment as events; biases rank, never confidence; persists across walks
+./exe/hcol flag Gemfile.lock down     # sink it in every column (⚑down, bar unchanged)
+./exe/hcol flag AGENTS.md exclude     # hide it from lens columns (details facet still shows it)
+./exe/hcol flag AGENTS.md clear       # the undo — last flag wins
+./exe/hcol walk .                     # + - x u flag the selection live; .hcolumns/flags.jsonl accretes
 
 # beads — the project's issue DB as columns (needs the shared dolt server; bd dolt start)
 ./exe/hcol explore .              # …now also HAS_BEADS → the beads (hc) index

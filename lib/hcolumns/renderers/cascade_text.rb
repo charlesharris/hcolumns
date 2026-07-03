@@ -211,7 +211,7 @@ module HColumns
       end
 
       def hint
-        "  ↑↓/jk move · →/l descend · ←/h back · Tab modes · i details · [ ] floor · q quit"
+        "  ↑↓/jk move · →/l descend · ←/h back · Tab modes · i details · [ ] floor · +-xu flag · q quit"
       end
 
       # Basename a path-like label for narrow columns; leave composite labels

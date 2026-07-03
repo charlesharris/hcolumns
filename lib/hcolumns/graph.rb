@@ -12,9 +12,14 @@ module HColumns
     # plain mutable graph (layer one) — and a projection folded *from* a log is
     # itself log-less (its log is upstream), so folding uses the apply_* path,
     # which records nothing.
+    # The vocabulary of human node flags: ranking opinion, folded beside (never
+    # into) the evidence. :clear removes a flag (last-flag-wins is the undo).
+    FLAG_LEVELS = %i[up down exclude clear].freeze
+
     def initialize(log: nil)
       @nodes = {}
       @edges = {}
+      @flags = {}
       @log = log
     end
 
@@ -52,6 +57,37 @@ module HColumns
       ))
       edge.add(observation)
       self
+    end
+
+    # Record + fold a human flag on a node. This is opinion, not evidence: it
+    # never touches an edge or its confidence — lenses read it as a score bias
+    # (see Lens#bias), so the inspector keeps showing the untouched truth.
+    def flag(node_id:, level:, by: nil, at: nil)
+      raise ArgumentError, "unknown flag level: #{level.inspect}" unless FLAG_LEVELS.include?(level)
+
+      payload = { node_id: node_id, level: level, by: by, at: at }
+      @log&.append(kind: :flag, at: at, payload: payload)
+      apply_flag(payload)
+      payload
+    end
+
+    # Fold a flag into the projection without recording (the replay path).
+    # Last flag wins; :clear deletes.
+    def apply_flag(payload)
+      if payload[:level] == :clear
+        @flags.delete(payload[:node_id])
+      else
+        @flags[payload[:node_id]] = payload
+      end
+      self
+    end
+
+    def flag_of(node_id)
+      @flags[node_id]&.fetch(:level)
+    end
+
+    def flag_info(node_id)
+      @flags[node_id]
     end
 
     def edges

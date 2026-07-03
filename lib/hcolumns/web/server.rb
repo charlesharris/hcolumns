@@ -59,6 +59,10 @@ module HColumns
           id = query["id"]
           json_response(id && app.panel(id, mode: query["mode"]),
                         missing: { error: "no such node", id: id })
+        when "/flag"
+          id = query["id"]
+          json_response(id && app.flag(id, query["level"]),
+                        missing: { error: "no such node or level", id: id })
         else
           [404, "text/plain", "not found\n"]
         end
@@ -292,12 +296,28 @@ module HColumns
           return r.ok ? r.json() : null;
         }
 
+        let selected = null; // the last-clicked item — what the flag keys act on
+
         function selectItem(row, it) {
           document.querySelectorAll('.item.sel').forEach(e => e.classList.remove('sel'));
           row.classList.add('sel');
+          selected = it;
           const lines = (it.detail && it.detail.length) ? it.detail : (it.reason ? [it.reason] : []);
           dock.textContent = lines.join('\n');
         }
+
+        // Flag the selected item's target: - down, +/= up, x exclude, u clear
+        // (same keys as the TUI). The flag lands as an event server-side; every
+        // open column re-fetches so the re-ranking shows immediately.
+        document.addEventListener('keydown', async (e) => {
+          const level = { '-': 'down', '+': 'up', '=': 'up', 'x': 'exclude', 'u': 'clear' }[e.key];
+          if (!level || !selected || !selected.target_id) return;
+          const u = new URL('/flag', location.origin);
+          u.searchParams.set('id', selected.target_id);
+          u.searchParams.set('level', level);
+          const r = await fetch(u);
+          if (r.ok) refreshOpen();
+        });
 
         function renderColumn(panel, depth) {
           const col = document.createElement('div');

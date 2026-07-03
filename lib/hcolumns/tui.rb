@@ -85,6 +85,10 @@ module HColumns
       when "i" then @cascade.show_details
       when "[" then @cascade.adjust_floor(-0.05)
       when "]" then @cascade.adjust_floor(0.05)
+      when "-" then @cascade.flag_selected(:down)
+      when "+", "=" then @cascade.flag_selected(:up)
+      when "x" then @cascade.flag_selected(:exclude)
+      when "u" then @cascade.flag_selected(:clear)
       when "q", :ctrl_c, :escape then :quit
       end
     end

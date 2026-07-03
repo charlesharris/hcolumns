@@ -102,6 +102,7 @@ module HColumns
       case kind
       when :node then node_to_h(payload)
       when :observe then observation_to_h(payload)
+      when :flag then Codec.dump(payload) # a plain symbol-keyed hash; Codec keeps :level a Symbol, at a Time
       else raise ArgumentError, "cannot serialize event kind #{kind.inspect}"
       end
     end
@@ -110,6 +111,7 @@ module HColumns
       case kind
       when :node then node_from_h(h)
       when :observe then observation_from_h(h)
+      when :flag then Codec.load(h)
       else raise ArgumentError, "cannot load event kind #{kind.inspect}"
       end
     end

@@ -22,6 +22,7 @@ module HColumns
       when "inspect" then inspect_node(@argv.first)
       when "json" then emit_json(@argv.first)
       when "save" then save(@argv[0], @argv[1])
+      when "flag" then flag_path(@argv[0], @argv[1])
       when "produce" then produce(@argv[0], @argv[1])
       when "serve" then serve(@argv.first)
       when "nodes" then list_nodes
@@ -399,12 +400,39 @@ module HColumns
         providers << Providers::Beads.new(beads_root) if beads_root
         root = repo || (File.directory?(path) ? path : File.dirname(path))
         providers << Providers::RubyCode.new(root)
-        workspace = Workspace.new(providers: providers, lens: lens)
-        root = workspace.add_node(Providers::Filesystem.node_for(path))
-        [workspace, root.id]
+        # A real walk is log-backed (providers record as they expand) and carries
+        # the accreting flag store: prior sessions' judgments replay in, and new
+        # flags append as they happen.
+        workspace = Workspace.new(graph: Graph.new(log: EventLog.new), providers: providers,
+                                  lens: lens, flag_store: flag_store_for(root))
+        node = workspace.add_node(Providers::Filesystem.node_for(path))
+        workspace.replay_flags
+        [workspace, node.id]
       else
         [fixture_workspace, resolve_in_fixture(arg || fixture_default)]
       end
+    end
+
+    # The flag store for a walked root — where this repo's judgments accrete.
+    def flag_store_for(root)
+      FlagStore.new(File.join(root, ".hcolumns", "flags.jsonl"))
+    end
+
+    # `hcol flag <path> <up|down|exclude|clear>` — flag a file/dir without
+    # opening the TUI (the bulk entry point; the walk replays it next time).
+    def flag_path(path_arg, level)
+      level = level&.to_sym
+      path = path_arg && File.expand_path(path_arg)
+      unless path && File.exist?(path) && Graph::FLAG_LEVELS.include?(level)
+        warn "usage: hcol flag <path> <up|down|exclude|clear>"
+        return 1
+      end
+
+      node = Providers::Filesystem.node_for(path)
+      root = Providers::Git.repo_root(path) || (File.directory?(path) ? path : File.dirname(path))
+      flag_store_for(root).append(node_id: node.id, level: level, by: ENV["USER"] || "user", at: now)
+      puts "⚑ #{level} #{path_arg}"
+      0
     end
 
     def fixture_workspace
@@ -444,8 +472,12 @@ module HColumns
           hcol explore [node|path]   print the ranked column for a node or a real file/dir
                                      (default: src/orders.rb in the demo graph)
           hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;
-                                     Tab cycles the column's modes, [ ] move the confidence floor)
+                                     Tab cycles the column's modes, [ ] move the confidence floor,
+                                     + - x u flag the selection up/down/excluded/clear)
                                      (a real dir is indexed lazily; default: demo repo root)
+          hcol flag <path> <up|down|exclude|clear>
+                                     flag a file/dir without the TUI; persists to
+                                     .hcolumns/flags.jsonl and replays on every walk
           hcol walk sessions         walk the list of agent sessions, descend into any
           hcol walk sessions --live  …with the newest session streaming as it works
           hcol explore session       the agent-session route (Task→change→files→test→log)

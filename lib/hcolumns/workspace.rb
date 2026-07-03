@@ -15,9 +15,10 @@ module HColumns
   class Workspace
     attr_reader :graph, :lens
 
-    def initialize(graph: Graph.new, providers: [], lens: Lens.new(name: :default))
+    def initialize(graph: Graph.new, providers: [], lens: Lens.new(name: :default), flag_store: nil)
       @graph = graph
       @providers = providers
+      @flag_store = flag_store
       @expanded = {}
       self.lens = lens
     end
@@ -31,6 +32,20 @@ module HColumns
 
     def add_node(node)
       @graph.add_node(node)
+    end
+
+    # Flag a node up/down/exclude/clear — the user's ranking judgment, recorded
+    # as an event (and persisted, when a store is attached, so it outlives the
+    # session). `by` defaults to the local user for attribution in rank reasons.
+    def flag(node_id, level, at:, by: nil)
+      payload = @graph.flag(node_id: node_id, level: level, by: by || ENV["USER"] || "user", at: at)
+      @flag_store&.append(payload)
+      payload
+    end
+
+    # Replay persisted flags (a prior session's judgments) into this graph.
+    def replay_flags
+      @flag_store ? @flag_store.replay(@graph) : 0
     end
 
     def node(id)

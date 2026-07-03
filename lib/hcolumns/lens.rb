@@ -43,6 +43,16 @@ module HColumns
       tuner.score(edge, now: now) * relation_weights.fetch(edge.type, 1.0)
     end
 
+    # A user flag's score multiplier. The level -> number mapping lives HERE, in
+    # the opinion layer, because a flag biases *ranking* only: confidence still
+    # reports the untouched evidence (a lens could even weigh flags differently).
+    # :exclude never reaches scoring — the builder hides those entries outright.
+    FLAG_BIAS = { up: 1.5, down: 0.4 }.freeze
+
+    def bias(flag_level)
+      flag_level ? FLAG_BIAS.fetch(flag_level, 1.0) : 1.0
+    end
+
     # Confidence and the floor are pure evidence (the tuner); the lens delegates.
     def confidence(edge, now:)
       tuner.confidence(edge, now: now)

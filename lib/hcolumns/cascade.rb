@@ -120,6 +120,17 @@ module HColumns
       self
     end
 
+    # Flag the selected item's target (up/down/exclude/clear) and re-rank the
+    # walked path live — the flag applies wherever that node appears, not just
+    # in this column. No-op when nothing descendable is selected.
+    def flag_selected(level)
+      item = selected_entry
+      return self unless item&.target_id && @source.respond_to?(:flag)
+
+      @source.flag(item.target_id, level, at: @now)
+      rebuild!
+    end
+
     # A global confidence floor applied to every lens-backed panel (the `[`/`]`
     # retune); facets ignore it. Rebuilds the walked path.
     def adjust_floor(delta)

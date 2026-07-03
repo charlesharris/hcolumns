@@ -22,7 +22,10 @@ module HColumns
         next unless @lens.admits?(edge.type)        # scope: hide whole families
         next unless @lens.visible?(edge, now: now)  # floor: hide weak edges
 
-        ColumnEntry.new(edge: edge, target: target, now: now, lens: @lens)
+        flag = @graph.flag_info(edge.target_id)     # the user's judgment on the target
+        next if flag && flag[:level] == :exclude    # flagged out of view (facets still show it)
+
+        ColumnEntry.new(edge: edge, target: target, now: now, lens: @lens, flag: flag)
       end
 
       groups = entries

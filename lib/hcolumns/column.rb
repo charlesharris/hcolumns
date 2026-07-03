@@ -5,13 +5,14 @@ module HColumns
   # target, carrying its derived confidence/recency/maturity, its score, and the
   # provenance behind it.
   class ColumnEntry
-    attr_reader :edge, :target, :score, :confidence, :recency, :maturity
+    attr_reader :edge, :target, :score, :confidence, :recency, :maturity, :flag
 
-    def initialize(edge:, target:, now:, lens:)
+    def initialize(edge:, target:, now:, lens:, flag: nil)
       @edge = edge
       @target = target
-      @score = lens.score(edge, now: now)
-      @confidence = lens.confidence(edge, now: now) # lens-adjusted, so the bar matches the rank
+      @flag = flag # the user's up/down judgment on the target, if any
+      @score = lens.score(edge, now: now) * lens.bias(flag && flag[:level])
+      @confidence = lens.confidence(edge, now: now) # untouched by flags: evidence, not opinion
       @recency = edge.recency(now: now)
       @maturity = edge.maturity(now: now) # structural truth, unaffected by the lens
     end
@@ -29,7 +30,16 @@ module HColumns
       kinds = edge.evidence_kinds.map(&:to_s).join("+")
       summary = edge.observations.map(&:evidence_summary).compact.first
       base = summary || "#{edge.observations.size} observation(s)"
-      "#{base} [#{kinds}]; conf #{format('%.2f', confidence)}"
+      "#{base} [#{kinds}]; conf #{format('%.2f', confidence)}#{flag_note}"
+    end
+
+    # The visible trace of a bias — so a reordered column never looks like the
+    # evidence changed. "⚑down (charris)" beside an untouched confidence bar.
+    def flag_note
+      return "" unless flag
+
+      by = flag[:by] ? " (#{flag[:by]})" : ""
+      " · ⚑#{flag[:level]}#{by}"
     end
   end
 

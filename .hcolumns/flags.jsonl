@@ -1,0 +1,3 @@
+{"seq":null,"at":{"$time":"891557093720783/500000"},"kind":"flag","payload":{"node_id":"obj:a7c295b5381f05f6","level":{"$sym":"down"},"by":"charris","at":{"$time":"891557093720783/500000"}}}
+{"seq":null,"at":{"$time":"1783114187547993/1000000"},"kind":"flag","payload":{"node_id":"obj:f09758a111177218","level":{"$sym":"exclude"},"by":"charris","at":{"$time":"1783114187547993/1000000"}}}
+{"seq":null,"at":{"$time":"891557109355607/500000"},"kind":"flag","payload":{"node_id":"obj:f09758a111177218","level":{"$sym":"clear"},"by":"charris","at":{"$time":"891557109355607/500000"}}}

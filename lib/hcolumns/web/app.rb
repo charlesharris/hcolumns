@@ -72,6 +72,17 @@ module HColumns
         panel(@root_id)
       end
 
+      # Flag a node from the browser (the web echo of Cascade#flag_selected).
+      # Returns nil for an unknown node/level so the router can 404 it.
+      def flag(node_id, level)
+        level = level.to_s.to_sym
+        return nil unless Graph::FLAG_LEVELS.include?(level)
+        return nil unless @workspace.respond_to?(:flag) && @workspace.node(node_id)
+
+        @workspace.flag(node_id, level, at: @now)
+        { ok: true, id: node_id, level: level.to_s }
+      end
+
       private
 
       def pick(modes, key)
