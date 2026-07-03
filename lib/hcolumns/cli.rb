@@ -395,6 +395,8 @@ module HColumns
         providers = [Providers::Filesystem.new, Providers::NamingRules.new]
         repo = Providers::Git.repo_root(path)
         providers << Providers::Git.new(repo) if repo
+        beads_root = Providers::Beads.available? && Providers::Beads.root_for(path)
+        providers << Providers::Beads.new(beads_root) if beads_root
         root = repo || (File.directory?(path) ? path : File.dirname(path))
         providers << Providers::RubyCode.new(root)
         workspace = Workspace.new(providers: providers, lens: lens)

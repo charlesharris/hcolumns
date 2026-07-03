@@ -27,6 +27,8 @@ module HColumns
       LogLine: %i[output default details],
       Session: %i[default details],
       Sessions: %i[default details],
+      Bead: %i[default bead details],
+      Beads: %i[default details],
       Person: %i[git details],
       Agent: %i[default details]
     }.freeze

@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-01 · **Branch:** `main` · **Tests:** 168 examples, 0 failures · **Runtime deps:** none (rspec is dev-only)
+**Updated:** 2026-07-03 · **Branch:** `main` · **Tests:** 183 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -49,13 +49,23 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > style), every line a focusable item → a **`CommitFile`** node → its **file-scoped diff**, with **ZOOM OUT**
 > to the full commit (unscoped diff + history). The whole loop — open file → blame → jump to the commit
 > that changed a line → diff → zoom out — walks on the existing git substrate. Both clients rendered for it
-> (web: sha column · code · author-in-dock; TUI: full-width dock reads the blamed line + its commit).
+> (web: sha column · code · author-in-dock; TUI: full-width dock reads the blamed line + its commit) →
+> **beads provider (the plan layer IS the beads DB)**: the project's `bd` issue database walked as columns —
+> repo root → `HAS_BEADS` → index → each bead; a bead's dependency rows become typed edges (`HAS_CHILD`/
+> `CHILD_OF`, `BLOCKS`/`BLOCKED_BY`, custom kinds upcased) at `structure` 1.0, its file links become
+> `TOUCHES` onto real `fs.path` nodes (metadata list → `agent`, prose-scraped path → `inference`) so a walk
+> descends bead → file → blame → commit. Read via a **direct MySQL-wire connection** to the dolt
+> sql-server (hcolumns as an active *client*; endpoint resolved from `.beads` state, never assumed), a
+> `bead` facet renders the issue body, and the repo now dogfoods its own tracking (`bd`, prefix `hc`,
+> local shared server :3308).
 >
 > **Pick up next (one of):**
-> **branch/history browsing polish** (a linear log facet; the repo-root entry experience) · **shareable
-> cascade-state URLs** (encode the trail so a walk is linkable) · a file's *latest* diff in git-context ·
-> **goal biases *ranking*** (the "soil" step into the tuner) · a **real external agent** appending to the
-> log (a hook/bridge instead of `produce`). Trade-offs in
+> **beads slice 2** (reverse walk: file → which beads touch it; `ready`/`blocked` views — the DB has them
+> as tables; a `planner` lens; status→glyph mapping; schema-version guard) · **source-at-commit facet**
+> (`hc-48p`) · **real external agent** appending to the log (`hc-gzj` — converges with beads via issue
+> `metadata` file lists) · **branch/history browsing polish** · **shareable cascade-state URLs** ·
+> **goal biases *ranking*** (the "soil" step into the tuner). The backlog now lives in beads itself
+> (`bd list`; `hcol walk .` → the beads index). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -93,6 +103,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| _(this commit)_ | **20** — **beads provider: the plan layer is the beads DB**. `Providers::Beads` walks a project's `bd` issue database (Yegge's beads, dolt-backed) as columns: repo root → `HAS_BEADS` → a `Beads` index → `HAS_BEAD` per issue (bounded `MAX_BEADS`, closed ranked last); a `Bead`'s dependency rows map to typed edges — `parent-child` → `HAS_CHILD`/`CHILD_OF`, `blocks` → `BLOCKS`/`BLOCKED_BY`, unknown kinds upcased — all `structure` 1.0 (declared facts in the DB). File links are two-tier by honesty: a `metadata` JSON file list is the agent's word → `TOUCHES` at `agent` (0.7); a path scraped from description/design prose → `inference` (0.3); both land on real `fs.path` nodes so the walk continues into source/blame/git. **Integration posture (decided with Charris): direct MySQL-wire client of the dolt sql-server** — pure-Ruby `ruby-mysql` as a *soft* dependency (`available?` gates on `require`; core stays zero-dep), one cached connection per beads root shared with the new `bead` content facet (issue body: description/design/acceptance/notes). Endpoint **resolved from repo state** (`.beads/metadata.json` database name; `config.yaml` shared-server flag → shared or repo port file), never assumed — the lesson of the orphaned-DB incident. A dead server warns + drops the connection (heals on the next walk), never crashes the cascade. Repo now **dogfoods its own tracking**: `bd` prefix `hc` on the local shared dolt server (:3308), the epic/slice beads carry the provider's own design notes. Specs run against a fake client (the `Client` duck-type), 15 examples; live-verified: `hcol explore .` shows `HAS_BEADS`, the epic column renders `HAS_CHILD`/`RELATED`/`TOUCHES`, the facet renders the body. |
 | `553663c` | **19** — **git exploration: per-line blame → file-scoped diff → zoom-out** (vim-fugitive-style). A **refocus on exploration** (git/fs as the subject) over the live-agent arc. A file in a git repo gets a **`blame` tab** (`BlameMode`): one `git blame --porcelain` call tags each line with the commit that last touched it; every line is a *focusable item* whose target is a new **`CommitFile`** node (that commit's change to *this* file). Descend a line → its **file-scoped diff** (`git show sha -- path`, auto mode), carrying two **ZOOM OUT** items — **▲ full commit** (→ the materialized `Commit`, the whole unscoped diff + `PARENT`/history) and **▤ current file**. So the whole fugitive loop — open file → blame → jump to the commit that changed a line → scoped diff → zoom out — is walkable, mostly on the existing git substrate (commits/branches/diffs were already there). `GitDiffMode` broadened to `Commit`+`CommitFile` (scopes on the node's `:path`). The one rule bent: `BlameMode` **materializes** the `CommitFile`/`Commit` nodes its lines point at (a lightweight expansion — nodes, not a per-line edge explosion), the one place a facet writes to the graph. Cheap `Git.in_repo?` (upward `.git` walk, no subprocess) gates the tab. **Both clients polished**: the web renders blame fugitive-style (muted sha column · code, wider column, author/date in the dock) and the TUI uses the full-width dock to read the blamed line + its commit (sha · author · date · summary). Shared `Git.commit_node`/`commit_file_node`/`blame`/`parse_blame`/`show(path:)`. 6 specs. |
 | `9db3af8` | **18** — **SSE: push the tail to the browser (lock-free)**. The file-tail web serve stops *polling* `/state` and *pushes* over `text/event-stream`. The load-bearing consequence: a long-lived `/events` stream can't share the single-threaded accept loop, so the server goes **thread-per-connection** — and to stay lock-free (the choice made *with* Charris), each connection builds its **own** `App` tailing the shared read-only log (`Server.new(app_factory:, streaming: true)`), so a stream + concurrent `/panel` fetches share no mutable state and need no mutex (layer 17's log-is-truth property extended to many in-process readers; the `/panel` cost is re-folding the log per request, negligible at demo scale). New `/events` route (held open, pushes `{version, done}` whenever the log grows, closes on `eof`); `stream_events` bypasses the pure `respond` router (which stays `[status,type,body]` for the short routes). Client gains a `STREAM` flag → `EventSource('/events')` in place of the 700ms poll, same reaction (re-fetch open columns on a version bump, stop on done). The in-memory `Feed` demo (`serve session --live`) stays single-threaded on `/state` polling. Non-streaming serve byte-identical. Verified over real sockets (version 3→…→20 then done; `/panel` concurrent with an open stream). 3 specs. |
 | `fee683d` | **17** — **real async producer (out-of-process log-tail)**: the live demo's producer stops being a wall-clock-*polled* `Feed` and becomes a genuinely separate **process**. `hcol produce <session\|sessions> f.jsonl` (`LogProducer`) replays the timed script into an append-only JSONL log in real time — the way a live agent would append events as it works. `hcol walk f.jsonl --live` / `serve f.jsonl --live` attach a **`TailReader`** that follows the file: each `release` reads the bytes appended since last call, splits complete lines (a half-written trailing line stays buffered), folds each into the projection, and flips `done?` on an `eof` marker. It **duck-types the `Feed`** (`release(elapsed, into:)`/`log`/`done?`), so `Cascade#tick` and `Web::App#pump` drive it unchanged — `elapsed` is ignored (events arrive on their own, not "when due"). The load-bearing reframe: concurrency lives **between processes**, mediated by the append-only file, so the in-memory `EventLog` stays single-writer and needs **no mutex** — the thread-safety the STATUS kept promising was only ever needed if you insisted on one shared in-memory log. A live log is also a valid snapshot (same JSONL; `eof` skipped by `load`), unifying layers 16↔17. Shared `Persistence.line_for`/`parse_line`/`eof_line`. Verified two-process (producer + tailing consumer): the phase advances editing→testing→reviewing and `done?` trips on eof. 7 specs. |
@@ -165,7 +176,9 @@ content_modes.rb   content facets (a node's contents, not relations; derived vie
                    SourceMode (file text, numbered/bounded), BlameMode (per-line blame; each line an item
                    -> a CommitFile; materializes those nodes), GitDiffMode (Commit -> full git show, or a
                    CommitFile -> file-scoped diff + ZOOM OUT items), OutputMode (TestRun/LogLine ->
-                   captured :output). Each applies? gates its tab to real content
+                   captured :output), BeadMode (a bead's body: description/design/acceptance/notes, read
+                   live from the beads DB via the provider's shared client). Each applies? gates its tab
+                   to real content
 mode_resolver.rb   node type -> ranked [Mode] (head = auto). A session's phase floats PHASE_PREFERENCE
                    modes to the head (filtered by Mode#applies?), :details always kept. Keystone of the UI
 session_context.rb the session a walk sits in; reads the current phase off the Session node (event-
@@ -183,6 +196,13 @@ providers/
                         index node + HAS_SESSION per session (drives `walk sessions [--live]`)
   filesystem.rb         CONTAINS, one dir level at a time; skips hidden/.git/node_modules/...
   naming_rules.rb       source<->test PAIR by string transform (heuristic; misses flat spec/ dirs)
+  beads.rb              the plan layer: a project's beads (bd/dolt) issue DB as columns. Direct
+                        MySQL-wire client (soft dep ruby-mysql; available? gates), endpoint resolved
+                        from .beads state (shared-server flag + port files). root → HAS_BEADS → index
+                        → HAS_BEAD; deps table → HAS_CHILD/CHILD_OF, BLOCKS/BLOCKED_BY (+ upcased
+                        custom kinds) at structure 1.0; metadata file list → TOUCHES @ agent, prose
+                        path → TOUCHES @ inference, onto real fs.path nodes. Client duck-type
+                        (index/deps_for/issues_by_ids/body) = the spec seam
   git.rb                two-faced: file → CO_CHANGED_WITH/CHANGED_BY; repo root → HAS_BRANCH/HEAD,
                         Branch → POINTS_AT, Commit → PARENT/CHANGED/AUTHORED_BY. Bounded as before.
                         Also: blame(repo,path) (--porcelain, per-line sha+author+summary) + parse_blame;
@@ -245,6 +265,10 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol explore lib/hcolumns/cascade.rb --role reviewer   # strict: structure-first, weak edges hidden
 ./exe/hcol explore . --role explorer --floor 0.6             # speculative + a confidence floor
 
+# beads — the project's issue DB as columns (needs the shared dolt server; bd dolt start)
+./exe/hcol explore .              # …now also HAS_BEADS → the beads (hc) index
+./exe/hcol walk .                 # descend into a bead: children/blockers/TOUCHES, Tab → `bead` body
+
 # the web front-end — same columns, in a browser (zero runtime deps)
 ./exe/hcol json src/orders.rb                # the node's panel + ranked modes as JSON (the data contract)
 ./exe/hcol serve .                           # GET / = columns client, /panel?id=&mode= = JSON; --port N
@@ -300,6 +324,12 @@ same column without recompute.
   *real* external agent appending to the log (via a hook/bridge) is the next step (the transport — a
   file — is already proven). And the pull providers (fs/git/ruby) still don't record into a log, so only
   the agent-session demo is snapshottable/tailable today; a real code walk isn't yet.
+- **Beads provider needs a reachable server** — reads want the dolt sql-server up (`bd dolt start`);
+  a dead server degrades gracefully (warn + no beads edges) but there's no auto-start. No schema-version
+  guard yet (a DB written by a much newer bd could present unknown columns — `deps_for` already hit one
+  rename in the wild, `depends_on_id` → `depends_on_issue_id`). Prose path-scraping is a blunt heuristic
+  (it will happily TOUCH `.beads/dolt-server.port` if your notes mention it) — honest at `inference` 0.3,
+  but a `planner` lens may want to dim it. Index bounded at `MAX_BEADS=200`, no closed-issue paging.
 - **Git provider cost** — up to 2 git subprocess calls per file expansion; bounded but not cached.
 - **Ruby reference index** — cross-file `REFERENCES` triggers a one-time repo scan (parse every
   .rb, bounded at 2000 files) on first use; cached per Workspace, but the one un-lazy cost here.

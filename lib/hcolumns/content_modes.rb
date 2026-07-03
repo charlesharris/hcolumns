@@ -165,6 +165,51 @@ module HColumns
     end
   end
 
+  # A bead's long-form body — title/status header, then description, design,
+  # acceptance criteria, notes — read live from the beads database (the same
+  # connection the provider walks). A derived view like source/gitdiff: the
+  # graph holds the bead's relations; this facet renders the issue itself.
+  class BeadMode < Mode
+    MAX_LINES = 200
+    SECTIONS = { description: "DESCRIPTION", design: "DESIGN",
+                 acceptance_criteria: "ACCEPTANCE", notes: "NOTES" }.freeze
+
+    def initialize(name: :bead)
+      super(name: name)
+    end
+
+    def applies?(node)
+      node.type == :Bead && !node.properties[:beads_root].nil? && Providers::Beads.available?
+    end
+
+    def panel(node, _workspace, now:)
+      body = Providers::Beads.body(node.properties[:beads_root], node.properties[:bead_id])
+      sections = body ? body_sections(body) : [PanelSection.new(lines: ["(beads database unreachable)"])]
+      Panel.new(node: node, mode: name, sections: sections)
+    end
+
+    private
+
+    def body_sections(body)
+      header = ["#{body[:id]} — #{body[:title]}",
+                ["P#{body[:priority]}", body[:issue_type], body[:status], body[:assignee]].compact.join(" · ")]
+      sections = [PanelSection.new(lines: header)]
+      SECTIONS.each do |key, heading|
+        text = body[key].to_s
+        next if text.strip.empty?
+
+        sections << PanelSection.new(heading: heading, lines: clamp(text.split("\n")))
+      end
+      sections
+    end
+
+    def clamp(lines)
+      return lines if lines.size <= MAX_LINES
+
+      lines.first(MAX_LINES) + ["… (#{lines.size - MAX_LINES} more lines truncated)"]
+    end
+  end
+
   # Captured output — a TestRun's run or a LogLine's surrounding lines. Reads the
   # node's :output property (the fixture / a future log provider fills it); falls
   # back to the node's own summary line so the tab is never empty.

@@ -55,6 +55,7 @@ module HColumns
         modes[:blame] = BlameMode.new     # a file's per-line commit history
         modes[:gitdiff] = GitDiffMode.new # a commit's (or a file's, scoped) diff
         modes[:output] = OutputMode.new   # a test run / log line's captured output
+        modes[:bead] = BeadMode.new       # a bead's body (description/design/notes)
         modes
       end
     end
