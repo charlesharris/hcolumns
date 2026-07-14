@@ -53,8 +53,11 @@ case event
 when "UserPromptSubmit"
   # Each prompt opens a turn — the log partitions into "what each ask produced".
   # Ordinals are assigned at fold time, so this stateless hook just marks.
+  # Only HUMAN prompts count: system notifications, task events, and slash-command
+  # wrappers arrive through the same hook but start with markup ("<", "[") —
+  # logging those as turns is noise (found live, first dogfood session).
   label = payload["prompt"].to_s.strip.gsub(/\s+/, " ")[0, 60]
-  bridge("turn #{label}") unless label.empty?
+  bridge("turn #{label}") unless label.empty? || label.start_with?("<", "[")
 when "PreToolUse"
   # A test run entering flight: the TestRun node appears in :running (◐) and the
   # matching PostToolUse re-emits it as ✓/✗ — same digest-keyed node, live flip.
@@ -77,6 +80,10 @@ when "PostToolUse"
     end
   end
 when "Stop", "SubagentStop"
+  # No `done` here: this log ACCRETES across sessions (the next session appends to
+  # the same file), and an eof mid-log stops every TailReader that reaches it —
+  # the browser would flip "complete" and go deaf to later events (found live,
+  # first dogfood session). `done`/eof belongs to one-shot streams (hcol produce);
+  # a standing dogfood log just marks the phase and stays open.
   bridge("phase reviewing")
-  bridge("done")
 end
