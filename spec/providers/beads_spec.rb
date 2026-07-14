@@ -41,6 +41,23 @@ RSpec.describe HColumns::Providers::Beads do
       @issues.first(limit)
     end
 
+    # Stand in for bd's ready_issues / blocked_issues views: an issue is blocked
+    # when an open issue blocks it; ready = open/in-progress and not blocked.
+    def blocked(limit:)
+      @issues.select { |i| @deps.any? { |d| d[:type] == "blocks" && d[:issue_id] == i[:id] && open?(d[:depends_on_id]) } }
+             .first(limit)
+    end
+
+    def ready(limit:)
+      blocked_ids = blocked(limit: @issues.size).map { |i| i[:id] }
+      @issues.reject { |i| i[:status] == "closed" || blocked_ids.include?(i[:id]) }.first(limit)
+    end
+
+    def open?(id)
+      issue = @issues.find { |i| i[:id] == id }
+      issue && issue[:status] != "closed"
+    end
+
     def schema_version = @schema_version
 
     attr_writer :schema_version
@@ -191,6 +208,41 @@ RSpec.describe HColumns::Providers::Beads do
     it "adds no edges for a real file that no bead names" do
       File.write(File.join(@root, "lib", "lonely.rb"), "# nobody references me\n")
       expect(touched_by("lib/lonely.rb")).to be_nil
+    end
+  end
+
+  describe "ready / blocked views" do
+    def index_id
+      descend(column(root_node.id), :HAS_BEADS).entries.first.target.id
+    end
+
+    def view_ids(relation)
+      descend(column(index_id), relation).entries.map { |e| e.target.properties[:bead_id] }
+    end
+
+    it "hangs the DB's ready view off the index (open, no active blocker)" do
+      expect(view_ids(:HAS_READY)).to contain_exactly("hc-epic", "hc-child")
+    end
+
+    it "hangs the DB's blocked view off the index" do
+      expect(view_ids(:HAS_BLOCKED)).to eq(["hc-blocked"])
+    end
+
+    it "still lists every bead under HAS_BEAD alongside the overlays" do
+      expect(view_ids(:HAS_BEAD)).to include("hc-done") # closed: in the full list, neither ready nor blocked
+    end
+
+    it "planner floats ready work above the full bead list" do
+      weights = HColumns::Lens.preset(:planner).relation_weights
+      expect(weights.fetch(:HAS_READY)).to be > weights.fetch(:HAS_BEAD)
+    end
+
+    it "the Client rescues a missing view to an empty overlay (older DB)" do
+      raising_conn = Object.new
+      def raising_conn.prepare(*) = raise("Table 'ready_issues' doesn't exist")
+      client = BEADS::Client.new(raising_conn)
+      expect(client.ready(limit: 10)).to eq([])
+      expect(client.blocked(limit: 10)).to eq([])
     end
   end
 

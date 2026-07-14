@@ -243,6 +243,18 @@ module HColumns
           observe(graph, node, bead, :HAS_BEAD, at: row[:updated_at] || now,
                                                 summary: "P#{row[:priority]} #{row[:issue_type]} · #{row[:status]}")
         end
+        # The DB's own ready/blocked views, as overlay edges beside HAS_BEAD —
+        # "what can I start now" and "what's waiting", the planner's first question.
+        index_view(node, graph, client.ready(limit: MAX_BEADS), :HAS_READY, now: now, note: "ready — no active blocker")
+        index_view(node, graph, client.blocked(limit: MAX_BEADS), :HAS_BLOCKED, now: now, note: "blocked")
+      end
+
+      def index_view(node, graph, rows, type, now:, note:)
+        rows.each do |row|
+          bead = graph.add_node(self.class.bead_node(@root, row))
+          observe(graph, node, bead, type, at: row[:updated_at] || now,
+                                           summary: "#{note} · P#{row[:priority]} #{row[:status]}")
+        end
       end
 
       def expand_bead(node, graph, now:, client:)
@@ -362,6 +374,12 @@ module HColumns
       class Client
         INDEX_SQL = "SELECT id, title, status, priority, issue_type, updated_at FROM issues " \
                     "ORDER BY (status = 'closed'), priority, id LIMIT ?"
+        # bd computes ready ("no active blocker") and blocked itself, as SQL views.
+        # We read the DB's own answer rather than re-deriving the dependency math.
+        READY_SQL = "SELECT id, title, status, priority, issue_type, updated_at FROM ready_issues " \
+                    "ORDER BY priority, id LIMIT ?"
+        BLOCKED_SQL = "SELECT id, title, status, priority, issue_type, updated_at FROM blocked_issues " \
+                      "ORDER BY priority, id LIMIT ?"
         ISSUE_COLS = "id, title, status, priority, issue_type"
         BODY_SQL = "SELECT id, title, status, priority, issue_type, assignee, description, design, " \
                    "acceptance_criteria, notes, metadata, created_at, updated_at FROM issues WHERE id = ?"
@@ -384,6 +402,9 @@ module HColumns
         def index(limit:)
           rows(INDEX_SQL, limit).map { |r| index_row(r) }
         end
+
+        def ready(limit:) = view_rows(READY_SQL, limit)
+        def blocked(limit:) = view_rows(BLOCKED_SQL, limit)
 
         def deps_for(id)
           rows("SELECT issue_id, depends_on_issue_id, type FROM dependencies " \
@@ -424,6 +445,15 @@ module HColumns
 
         def index_row(r)
           { id: r[0], title: r[1], status: r[2], priority: r[3], issue_type: r[4], updated_at: r[5] }
+        end
+
+        # The ready/blocked views ship with bd >= 1.x; on an older DB they're
+        # simply absent, so a query error just omits the overlay (the schema
+        # guard is what signals a version mismatch — this stays quiet).
+        def view_rows(sql, limit)
+          rows(sql, limit).map { |r| index_row(r) }
+        rescue StandardError
+          []
         end
 
         def rows(sql, *params)

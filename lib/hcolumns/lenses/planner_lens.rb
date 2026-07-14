@@ -17,8 +17,8 @@ module HColumns
 
       def self.default_relation_weights
         {
-          # the plan, lifted
-          HAS_BEADS: 1.8, HAS_BEAD: 1.6,
+          # the plan, lifted — ready work first ("what can I start now")
+          HAS_BEADS: 1.8, HAS_READY: 1.9, HAS_BLOCKED: 1.5, HAS_BEAD: 1.6,
           HAS_CHILD: 1.6, CHILD_OF: 1.5, BLOCKS: 1.7, BLOCKED_BY: 1.7,
           RELATED: 1.3, DISCOVERED_FROM: 1.2, TOUCHES: 1.4, TOUCHED_BY: 1.8,
           # code / filesystem / history, dimmed (still reachable)
