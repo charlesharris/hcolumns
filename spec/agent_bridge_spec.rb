@@ -1,0 +1,99 @@
+# frozen_string_literal: true
+
+require "tmpdir"
+
+# The real agent bridge (hc-gzj): a neutral vocabulary -> Persistence events on an
+# append-only log. These specs drive the vocabulary and read the log back through
+# the same Persistence.load + project the live walk/serve uses, so what a bridged
+# session projects is exactly what a browser would show growing.
+RSpec.describe HColumns::AgentBridge do
+  def now = FIXED_NOW
+
+  around do |example|
+    Dir.mktmpdir("hcol-bridge") do |dir|
+      @dir = dir
+      @log = File.join(dir, "live.jsonl")
+      example.run
+    end
+  end
+
+  # A fresh bridge instance per call models a fresh hook process (no shared memory).
+  def bridge(session: "s1")
+    described_class.new(path: @log, session: session, clock: -> { now })
+  end
+
+  def graph
+    File.open(@log) { |io| HColumns::Persistence.load(io) }.project
+  end
+
+  def edge(from_type, relation)
+    subject = graph.nodes.find { |n| n.type == from_type }
+    graph.edges_from(subject.id).find { |e| e.type == relation }
+  end
+
+  it "writes the session spine as a header on the first command" do
+    bridge.apply("edit lib/foo.rb")
+    g = graph
+    expect(g.nodes.map(&:type)).to include(:Session, :Agent, :ProposedChange)
+    expect(edge(:Session, :DRIVEN_BY)).not_to be_nil
+    expect(edge(:Session, :PROPOSES)).not_to be_nil
+  end
+
+  it "turns `edit` into a ProposedChange TOUCHES onto a real fs.path node (unifies)" do
+    bridge.apply("edit lib/foo.rb")
+    touches = edge(:ProposedChange, :TOUCHES)
+    file = graph.node(touches.target_id)
+    expect(file.identity[:scheme]).to eq("fs.path") # same identity the fs/git/beads providers use
+    expect(file.properties[:path]).to eq(File.expand_path("lib/foo.rb"))
+    expect(touches.confidence(now: now)).to eq(1.0) # a real edit is verifiable ground truth
+  end
+
+  it "drives the session phase (a Symbol that survives replay and reaches the resolver)" do
+    b = bridge
+    b.apply("edit lib/foo.rb")
+    b.apply("phase reviewing")
+    g = graph
+    session = g.nodes.find { |n| n.type == :Session }
+    expect(session.properties[:phase]).to eq(:reviewing)
+    ctx = HColumns::SessionContext.new(graph: g, node_id: session.id)
+    expect(HColumns::ModeResolver.new.auto(session, session: ctx).name).to eq(:reviewer)
+  end
+
+  it "records a test run as VERIFIED_BY, carrying pass/fail" do
+    b = bridge
+    b.apply("edit lib/foo.rb")
+    b.apply("test fail bundle exec rspec")
+    verified = edge(:ProposedChange, :VERIFIED_BY)
+    run = graph.node(verified.target_id)
+    expect(run.type).to eq(:TestRun)
+    expect(run.properties[:output].join).to include("FAIL").and include("rspec")
+  end
+
+  it "writes the header only once across separate hook processes" do
+    bridge.apply("edit a.rb")        # process 1: header + edit
+    bridge.apply("edit b.rb")        # process 2: no second header, just the edit
+    bridge.apply("edit c.rb")        # process 3
+    expect(graph.nodes.count { |n| n.type == :Session }).to eq(1)
+    expect(graph.nodes.count { |n| n.type == :ProposedChange }).to eq(1)
+    expect(graph.edges_from(graph.nodes.find { |n| n.type == :ProposedChange }.id)
+                .count { |e| e.type == :TOUCHES }).to eq(3)
+  end
+
+  it "`session` names the spine and `done` closes the stream" do
+    b = bridge(session: "live")
+    b.apply("session feature-x Add the widget")
+    b.apply("done")
+    session = graph.nodes.find { |n| n.type == :Session }
+    expect(session.identity[:key]).to eq("feature-x")
+    expect(session.properties[:name]).to eq("Task: Add the widget")
+    # the eof marker is present but Persistence.load skips it (a live log is a snapshot)
+    expect(File.read(@log)).to include('"eof":true')
+  end
+
+  it "ignores an unknown verb without crashing the stream" do
+    b = bridge
+    b.apply("edit lib/foo.rb")
+    expect { b.apply("frobnicate whatever") }.to output(/unknown command/).to_stderr
+    expect(graph.nodes.map(&:type)).to include(:ProposedChange) # earlier events intact
+  end
+end

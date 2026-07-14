@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-14 · **Branch:** `main` · **Tests:** 209 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-14 · **Branch:** `main` · **Tests:** 216 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -67,14 +67,16 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > made today shapes tomorrow's columns. Real walks are now log-backed (providers record as they expand).
 >
 > **Pick up next (one of):**
-> **real external agent** appending to the log (`hc-gzj` — the one bead still open+ready; converges with beads
-> via issue `metadata` file lists, which now feed the reverse walk *and* which the agent bridge would write) ·
-> **planner facet polish** (a `bead` facet foregrounding acceptance-criteria/blocker chains; a status-glyph
-> legend) · **branch/history browsing polish** (the source-at-commit facet is now in, so a commit walk reads
-> fully) · **shareable cascade-state URLs** · **goal biases *ranking*** (the "soil" step into the tuner). The
-> beads provider arc (slices 1–3) is complete and the git-exploration loop is closed (blame → scoped diff →
-> source-at-commit → zoom out). The backlog lives in beads itself (`bd list`; `hcol walk .` → the beads index,
-> `--role planner` leads with ready work). Trade-offs in
+> **bridge polish / real dogfood** (`hc-gzj` shipped the seam + a thin CC hook; next: *enable* it
+> (`cp .claude/settings.json.example .claude/settings.json`) and live-drive a real session in the browser;
+> richer verbs — an `edit` carrying the diff `hunks` so the DiffFacet fills; a `retract` on an undone edit
+> once `:retract` lands) · **planner facet polish** (a `bead` facet foregrounding acceptance-criteria/blocker
+> chains; a status-glyph legend) · **shareable cascade-state URLs** · **goal biases *ranking*** (the "soil"
+> step into the tuner) · **undo / `:retract`** (the third event kind, still designed-in — now wanted by the
+> bridge for undone edits). The beads provider arc (slices 1–3) is complete, the git-exploration loop is closed
+> (blame → scoped diff → source-at-commit → zoom out), and the **guiding-star loop is closed**: a real agent
+> now feeds the log a human (or another agent) walks. The backlog lives in beads itself (`bd list`;
+> `hcol walk .` → the beads index, `--role planner` leads with ready work). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -112,6 +114,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| `pending` | **25** — **real agent bridge (`hc-gzj`): a live coding agent appends events to the log**. The guiding star, made real — the demo `produce` script is replaced by an *actual* agent's actions, and hcolumns stays **agent-agnostic** (Charris's call: decoupled seam + thin hook, not a Claude-Code-coupled parser). **`AgentBridge`** speaks a small **neutral vocabulary** — `session <key> <title>` · `edit <path>` · `phase <name>` · `test ok\|fail <cmd>` · `log <text>` · `done` — and appends one `Persistence` line per command to an append-only JSONL log; `hcol bridge --log f.jsonl [cmd]` reads a command from argv or stdin. The node/edge shapes **mirror `AgentSession` exactly** (Session `DRIVEN_BY` Agent, `PROPOSES` a ProposedChange, which `TOUCHES` files / is `VERIFIED_BY` a TestRun / `EMITTED` a LogLine), so a bridged session is indistinguishable from the fixture — and an `edit` lands on a **real `fs.path` node** (`Filesystem.node_for`), so the touched file *unifies with the whole graph*: a walk descends change → file → blame → commit, and the beads reverse-walk (`TOUCHED_BY`) lights up. The load-bearing trick: a hook fires the bridge **once per event (a fresh process each time)**, so it holds no memory — but the session spine (Session/Agent/ProposedChange) is **deterministic from the session key** (same identity ⇒ same id), so any process emits edges that reference it, and the one-time header is written only while the log is empty; `phase` re-emits the Session node (latest fold wins → drives the live modes). The **thin Claude-Code piece** lives outside the library: `.claude/hooks/agent_bridge_hook.rb` maps a `PostToolUse`/`Stop` hook's JSON → neutral commands (Edit/Write → `edit`, a test Bash → `test`, Stop → `phase reviewing` + `done`); `.claude/settings.json.example` wires it (opt-in — copy to enable). 7 specs (216 total); verified end-to-end from **simulated real hook JSON**: CC hook → translator → `hcol bridge` → log → `hcol explore/walk/serve --live` renders the session (phase editing→testing→reviewing), and the touched file's node id **equals** the fs-provider's (unification proven). Worked use case delivered: a session on hcolumns itself, watchable live in the browser. |
 | `f7d3b9d` | **24** — **source-at-commit facet (`hc-48p`): a CommitFile's contents, not just its diff**. A `CommitFile` (the blame/diff landing node) could only show `gitdiff`+`details` — no way to read the file *as of* that commit. New **`CommitSourceMode`** (`commitsource`), SourceMode's sibling for a CommitFile: reads `Git.show_at` (`git show sha:rel` — the blob, not the diff) as a numbered listing, added to the `CommitFile` POLICY **diff-first** (`gitdiff commitsource details` — blame arrival asks "what changed"; source is one Tab away). So a CommitFile now answers both "what changed here" (diff) and "what did the whole file look like then" (source). **Deleted-file fix** (the bead's second ask): `expand_commit` used to *skip* files a commit deleted (no `fs.path` to unify with) — it now links a **`CommitFile`** for them instead, so a commit's `CHANGED` list is complete and a deleted file is still viewable; `show_at` falls back to `sha^:rel` when the blob is absent at `sha` (a deletion commit's content lived at its parent), distinguishing an empty-but-present file (success, `[]`) from an absent path (nil). En route, fixed a latent **`rel` bug**: `BlameMode` computed the repo-relative path without resolving symlinks, so a repo under a symlinked prefix (macOS `/var`→`/private/var`, or any symlinked checkout) produced a broken `../../` rel that `git show sha:rel` can't resolve — now realpath-normalized on both sides. 4 specs (real-repo harness: blob at a commit, an older revision before a line existed, resolver diff-first, a file deleted by a later commit); live-verified on this repo (blame `mode.rb` → CommitFile → `SOURCE @ f4cb764`, tabs `[gitdiff, commitsource, details]`). |
 | `b891289` | **23** — **beads slice 3: ready/blocked views ("what can I start now")**. The planner's first question, answered by the DB's own computation. bd ships `ready_issues` and `blocked_issues` as **SQL views** (ready = open with no active blocker; blocked = an open issue blocks it), so hcolumns reads the DB's answer rather than re-deriving the dependency math — the active-client posture. The Beads **index** node now hangs two overlay edges beside `HAS_BEAD`: `HAS_READY` → each bead the ready view returns, `HAS_BLOCKED` → each blocked one (`Client#ready`/`#blocked`, P-then-id ordered, bounded `MAX_BEADS`). The same bead node carries multiple edges (it's both "a bead" and "ready"), exactly as the repo root carries `HAS_BRANCH`+`HEAD` — an empty view just omits its group (blocked is empty on our repo today, so no `HAS_BLOCKED` shows). The **planner lens** floats `HAS_READY` (1.9) above the full `HAS_BEAD` list (1.6), so standing on the index the first group *is* the startable work. The views are 1.x-only; on an older DB a view query rescues to `[]` (the overlay just vanishes — the schema guard is what signals the version gap). 5 specs (40 in the beads/lens files, 205 total); live-verified: the index's `HAS_READY` is exactly `bd ready` (hc-48p, hc-gzj), `HAS_BLOCKED` empty like `bd blocked`. |
 | `b291ca3` | **22** — **beads slice 2: reverse walk + planner lens + status glyphs + schema guard**. The plan layer becomes *navigable as a plan*, and the walk closes back on itself. **(1) Reverse walk (file → beads)** — `recognizes?` now fires on *any* real file under the beads root, and expanding one adds `TOUCHED_BY` edges to every bead that names it, mirroring the forward `TOUCHES` with the same honesty split (`:agent` for a `metadata` file list, `:inference` for a path scraped from prose). The lookup is a **cached reverse index** (`abs path → [{row, kind}]`), built lazily on the first file expansion from **one bulk query** (`reverse_source`, bounded `MAX_BEADS`) and held for the Workspace — the ruby-const-index pattern, so only the first file pays. A file no bead names simply adds no edges. So a walk now runs bead → file → blame → commit *and* file → the beads that touch it. **(2) Planner lens** (`lenses/planner_lens.rb`, `--role planner`) lifts the plan families (`HAS_BEADS`/`HAS_BEAD`, the dependency web, `TOUCHES`/`TOUCHED_BY` — the reverse edge highest, so from a file the beads surface first) and dims filesystem/code/history noise; the agent's `metadata` word is mixed a touch above prose. **(3) Status → glyph** — a bead carries its lifecycle as the same glyph `bd` uses (`○◐●✓❄`) in its display name, so every renderer (TUI, web, `bead` facet) shows the plan's shape at a glance. **(4) Schema-version guard** — `connect` reads `schema_migrations` once and warns if the DB is newer than the `KNOWN_SCHEMA=49` this provider maps (the lesson of the `depends_on_id`→`depends_on_issue_id` rename); a missing table = pre-1.x, read best-effort. 7 new specs (35 in the beads/lens files, 200 total); live-verified against the shared dolt server (:3308): `client_for` connects, `schema_version` reads 49 (no false warning), `reverse_source` round-trips the live schema, planner lifts `HAS_BEADS` over `CONTAINS`, glyphs render. No live `TOUCHED_BY` edges *yet* — no current bead names an in-repo file (all `metadata` is `{}`); dogfooding a file association is the demo. |
@@ -173,6 +176,13 @@ tail_reader.rb     consumer of an out-of-process producer: follows an append-onl
 log_producer.rb    the producer: replays a timed [{after:,kind:,payload:}] script into a JSONL log in
                    real wall-clock time (injected clock/sleeper for deterministic tests), then an eof
                    marker. `hcol produce session f.jsonl` in one terminal, `walk f.jsonl --live` in another
+agent_bridge.rb    the REAL producer (hc-gzj): a neutral agent vocabulary (edit/phase/test/log/done)
+                   -> Persistence events on an append-only log. Agent-agnostic; a thin external hook
+                   feeds it. Stateless per call (a hook = a fresh process): the Session/Agent/Change
+                   spine is deterministic from the session key, so any process emits edges referencing
+                   it; header written once (log empty). Shapes mirror AgentSession; edits are real
+                   fs.path nodes (unify with fs/git/ruby/beads). `hcol bridge --log f.jsonl <cmd|stdin>`.
+                   Thin Claude-Code glue: .claude/hooks/agent_bridge_hook.rb + settings.json.example
 tuner.rb           evidence math: score = w_conf·confidence + w_recency·recency; floor + evidence_mix
 lens.rb            base engine: tuner + relation_weights + optional scope; score/visible?/admits?/
                    with_floor; name→class registry (preset/cycle). Base IS the neutral :default lens
@@ -311,6 +321,13 @@ bundle exec rspec                 # 127 examples
 ./exe/hcol produce session /tmp/live.jsonl   # terminal 1: a separate process appends events in real time
 ./exe/hcol walk /tmp/live.jsonl --live       # terminal 2: tail it — the cascade grows as lines land
 ./exe/hcol serve /tmp/live.jsonl --live      # …or in a browser (phase drives the auto mode live)
+
+# real agent bridge — an actual agent's actions, in a neutral vocab (hc-gzj)
+./exe/hcol bridge --log /tmp/live.jsonl edit lib/hcolumns/cli.rb   # ProposedChange TOUCHES a real fs.path node
+./exe/hcol bridge --log /tmp/live.jsonl test ok bundle exec rspec  # TestRun VERIFIED_BY the change
+./exe/hcol bridge --log /tmp/live.jsonl phase reviewing            # re-emits the Session :phase (drives modes)
+# a thin Claude Code hook feeds these automatically — cp .claude/settings.json.example .claude/settings.json,
+# then `hcol serve .hcolumns/live.jsonl --live` and watch THIS session grow in the browser
 ```
 
 Verified end-to-end (incl. PTY-driven interactive walks of the real repo). On a real file,

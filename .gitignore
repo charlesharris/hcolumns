@@ -58,3 +58,10 @@ build-iPhoneSimulator/
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+
+# Live agent-bridge session log (hc-gzj) — a runtime artifact
+.hcolumns/live.jsonl
+
+# Enabling the agent bridge is a per-developer opt-in: the hook script and the
+# .example are committed; the active settings.json (which turns hooks on) is local.
+.claude/settings.json

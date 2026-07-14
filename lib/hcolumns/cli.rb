@@ -24,6 +24,7 @@ module HColumns
       when "save" then save(@argv[0], @argv[1])
       when "flag" then flag_path(@argv[0], @argv[1])
       when "produce" then produce(@argv[0], @argv[1])
+      when "bridge" then bridge
       when "serve" then serve(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
@@ -48,6 +49,10 @@ module HColumns
         when "--strict" then opts[:role] = "reviewer"
         when "--live" then opts[:live] = true
         when "--port" then opts[:port] = @argv.shift&.to_i
+        when "--log" then opts[:log] = @argv.shift
+        when "--session" then opts[:session] = @argv.shift
+        when /\A--log=(.+)/ then opts[:log] = Regexp.last_match(1)
+        when /\A--session=(.+)/ then opts[:session] = Regexp.last_match(1)
         when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
         when /\A--floor=(.+)/ then opts[:floor] = Regexp.last_match(1).to_f
         when /\A--port=(.+)/ then opts[:port] = Regexp.last_match(1).to_i
@@ -142,6 +147,25 @@ module HColumns
       0
     rescue Interrupt
       warn "\nstopped"
+      0
+    end
+
+    # The real agent bridge: append events for what an agent did, in a neutral
+    # vocabulary a thin external hook feeds. One command per argv or stdin line
+    # (`edit <path>`, `phase <name>`, `test ok|fail <cmd>`, `log <text>`, `done`),
+    # each a Persistence line on the --log file that `walk/serve <log> --live` tails.
+    def bridge
+      path = @opts[:log]
+      unless path
+        warn "usage: hcol bridge --log <file.jsonl> [--session KEY] [<command…>]   (or pipe commands on stdin)"
+        return 1
+      end
+      agent = AgentBridge.new(path: File.expand_path(path), session: @opts[:session] || "live")
+      if @argv.empty?
+        $stdin.each_line { |line| agent.apply(line) }
+      else
+        agent.apply(@argv.join(" "))
+      end
       0
     end
 
@@ -491,6 +515,11 @@ module HColumns
                                      reload a snapshot: the graph re-projects from the log
           hcol produce <session|sessions> <file.jsonl>
                                      out-of-process producer: append events to the log in real time
+          hcol bridge --log <file.jsonl> [--session KEY] [<command>]
+                                     real agent bridge: append events for what an agent did, in a
+                                     neutral vocab (edit <path> · phase <name> · test ok|fail <cmd> ·
+                                     log <text> · done) — one per arg or stdin line. A thin hook feeds it
+                                     (see .claude/hooks/agent_bridge_hook.rb); watch with walk/serve --live
           hcol walk <file.jsonl> --live    tail a producer's log; the cascade grows as events land
           hcol serve <file.jsonl> --live   …same, in a browser, pushed over SSE (run `produce` alongside)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
