@@ -8,6 +8,13 @@ module HColumns
     attr_reader :provider, :subject_id, :target_id, :edge_type,
                 :weight, :evidence_kind, :evidence_summary, :observed_at
 
+    # The turn this observation folded under — an annotation DERIVED from log
+    # order at fold time (the graph stamps it when a :turn marker precedes this
+    # observation), never persisted and never part of the observation's identity.
+    # Deleting the log's turn markers and replaying yields the same edges, just
+    # unattributed — turns are provenance grouping, not evidence.
+    attr_accessor :turn
+
     def initialize(provider:, subject_id:, target_id:, edge_type:, observed_at:,
                    weight: 1.0, evidence_kind: :inference, evidence_summary: nil)
       @provider = provider

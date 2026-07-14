@@ -90,6 +90,48 @@ RSpec.describe HColumns::AgentBridge do
     expect(File.read(@log)).to include('"eof":true')
   end
 
+  it "partitions the log with `turn` markers; fold assigns ordinals across processes" do
+    bridge.apply("turn first ask")        # process 1 (header lands before the marker)
+    bridge.apply("edit lib/foo.rb")       # process 2
+    bridge.apply("turn second ask")       # process 3 — no numbering by the producer
+    bridge.apply("edit lib/bar.rb")       # process 4
+    g = graph
+    expect(g.turns.map { |t| [t[:index], t[:label]] }).to eq([[1, "first ask"], [2, "second ask"]])
+    change = g.nodes.find { |n| n.type == :ProposedChange }
+    stamped = g.edges_from(change.id).select { |e| e.type == :TOUCHES }
+                .to_h { |e| [g.node(e.target_id).properties[:name], e.observations.first.turn[:index]] }
+    expect(stamped).to eq({ "foo.rb" => 1, "bar.rb" => 2 })
+    # the header spine (written before the first marker) stays unattributed
+    driven = g.edges_from(g.nodes.find { |n| n.type == :Session }.id).find { |e| e.type == :DRIVEN_BY }
+    expect(driven.observations.first.turn).to be_nil
+  end
+
+  describe "test lifecycle (start → ok/fail re-emits the same node)" do
+    it "shows a running test that flips in place when the result lands" do
+      bridge.apply("test start bundle exec rspec")   # process 1: in flight
+      g = graph
+      run = g.nodes.find { |n| n.type == :TestRun }
+      expect(run.properties[:state]).to eq(:running)
+      expect(run.properties[:name]).to start_with("◐")
+
+      bridge.apply("test ok bundle exec rspec")      # process 2: same digest key
+      g = graph
+      runs = g.nodes.select { |n| n.type == :TestRun }
+      expect(runs.size).to eq(1) # re-emitted, not duplicated — latest fold wins
+      expect(runs.first.id).to eq(run.id)
+      expect(runs.first.properties[:state]).to eq(:passed)
+      expect(runs.first.properties[:name]).to start_with("✓")
+    end
+
+    it "marks a failure with its own state and glyph" do
+      bridge.apply("test fail bundle exec rspec")
+      run = graph.nodes.find { |n| n.type == :TestRun }
+      expect(run.properties[:state]).to eq(:failed)
+      expect(run.properties[:name]).to start_with("✗")
+      expect(run.properties[:output].join).to include("FAILED")
+    end
+  end
+
   it "ignores an unknown verb without crashing the stream" do
     b = bridge
     b.apply("edit lib/foo.rb")

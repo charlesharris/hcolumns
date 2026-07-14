@@ -25,7 +25,7 @@ module HColumns
       ProposedChange: %i[diff reviewer details],
       TestRun: %i[output default details],
       LogLine: %i[output default details],
-      Session: %i[default details],
+      Session: %i[default turns details],
       Sessions: %i[default details],
       Bead: %i[default bead details],
       Beads: %i[default details],

@@ -8,12 +8,14 @@ module HColumns
   # + derived projection) finally slotted under the read-model, behind the seam
   # the architecture kept open from layer one.
   #
-  # Three event kinds today: :node (a node came into being), :observe (a provider
-  # or the agent asserted an edge — payload is an Observation), and :flag (a human
+  # Four event kinds today: :node (a node came into being), :observe (a provider
+  # or the agent asserted an edge — payload is an Observation), :flag (a human
   # up/down/exclude/clear judgment on a node — the first *interaction* event; the
   # payload is a plain hash, and a later flag on the same node supersedes the
-  # earlier one, so "clear" is the undo). :retract (a general undo counter-event)
-  # remains designed-in and deferred (see docs/STATUS.md).
+  # earlier one, so "clear" is the undo), and :turn (a marker partitioning the
+  # log into agent turns — pure provenance grouping; membership and ordinals are
+  # derived from log order at fold time, so producers stay stateless). :retract
+  # (a general undo counter-event) remains designed-in and deferred (docs/STATUS.md).
   class EventLog
     Event = Struct.new(:seq, :at, :kind, :payload, keyword_init: true)
 
@@ -50,6 +52,7 @@ module HColumns
         when :node then into.apply_node(event.payload)
         when :observe then into.apply_observe(event.payload)
         when :flag then into.apply_flag(event.payload)
+        when :turn then into.apply_turn(event.payload)
         end
       end
       into

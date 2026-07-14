@@ -213,6 +213,45 @@ module HColumns
     end
   end
 
+  # The session's turns — the log partitioned by :turn markers, each turn listing
+  # the nodes its observations touched, every one descendable. The juggler
+  # takeaway (survey #1): their per-item transactionId + "View Transaction"
+  # column, done the log way — a turn is derived provenance over the event
+  # stream, not stored structure. Reads the projection's fold-time turn list
+  # (Graph#turns), so a live tail grows this facet as markers land.
+  class TurnsMode < Mode
+    def initialize(name: :turns)
+      super(name: name)
+    end
+
+    def applies?(node)
+      node.type == :Session
+    end
+
+    def panel(node, workspace, now:)
+      turns = workspace.graph.turns
+      return empty_panel(node) if turns.empty?
+
+      Panel.new(node: node, mode: name, sections: turns.map { |t| section_for(t, workspace) })
+    end
+
+    private
+
+    def empty_panel(node)
+      lines = ["(no turns recorded — the producer hasn't emitted turn markers)"]
+      Panel.new(node: node, mode: name, sections: [PanelSection.new(heading: "TURNS", lines: lines)])
+    end
+
+    def section_for(turn, workspace)
+      items = turn[:node_ids].uniq.filter_map { |id| workspace.graph.node(id) }.map do |n|
+        PanelItem.new(label: n.name.to_s, target_id: n.id, glyph: "·")
+      end
+      label = turn[:label] ? " — #{turn[:label]}" : ""
+      heading = "TURN #{turn[:index]}#{label} (#{items.size} node#{items.size == 1 ? '' : 's'})"
+      PanelSection.new(heading: heading, items: items)
+    end
+  end
+
   # A bead's long-form body — title/status header, then description, design,
   # acceptance criteria, notes — read live from the beads database (the same
   # connection the provider walks). A derived view like source/gitdiff: the

@@ -102,12 +102,21 @@ module HColumns
         lines = ["    provenance —"]
         edge.observations.each do |o|
           r = o.reliability(now: now, mix: mix)
-          lines << format("      • [%s] w=%.2g  via %s  %s",
-                          o.evidence_kind, o.weight, o.provider, age(o, now))
+          lines << format("      • [%s] w=%.2g  via %s  %s%s",
+                          o.evidence_kind, o.weight, o.provider, age(o, now), turn_tag(o))
           lines << "        reliability #{reliability_detail(o, r, mix, now)}"
           lines << "        \"#{o.evidence_summary}\"" if o.evidence_summary
         end
         lines
+      end
+
+      # Which turn produced this observation — fold-derived provenance grouping
+      # (Observation#turn), shown only when the log carried turn markers.
+      def turn_tag(obs)
+        return "" unless obs.turn
+
+        label = obs.turn[:label] ? " (#{obs.turn[:label]})" : ""
+        "  · turn #{obs.turn[:index]}#{label}"
       end
 
       def reliability_detail(obs, r, mix, now)

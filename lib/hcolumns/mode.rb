@@ -57,6 +57,7 @@ module HColumns
         modes[:commitsource] = CommitSourceMode.new # a CommitFile's blob at that commit
         modes[:output] = OutputMode.new   # a test run / log line's captured output
         modes[:bead] = BeadMode.new       # a bead's body (description/design/notes)
+        modes[:turns] = TurnsMode.new     # a session's log partitioned into turns
         modes
       end
     end

@@ -39,6 +39,10 @@ def failed?(response)
   text.match?(/[1-9]\d*\s+failures?\b/) || text.include?("FAILED")
 end
 
+# Test-ish shell commands become TestRun lifecycle events; everything else is
+# noise for a plan view.
+TEST_CMD = /\b(rspec|rake test|bundle exec rspec|npm test|pytest|go test)\b/
+
 payload = JSON.parse($stdin.read) rescue {}
 event = payload["hook_event_name"]
 tool = payload["tool_name"]
@@ -46,6 +50,18 @@ input = payload["tool_input"] || {}
 response = payload["tool_response"] || {}
 
 case event
+when "UserPromptSubmit"
+  # Each prompt opens a turn — the log partitions into "what each ask produced".
+  # Ordinals are assigned at fold time, so this stateless hook just marks.
+  label = payload["prompt"].to_s.strip.gsub(/\s+/, " ")[0, 60]
+  bridge("turn #{label}") unless label.empty?
+when "PreToolUse"
+  # A test run entering flight: the TestRun node appears in :running (◐) and the
+  # matching PostToolUse re-emits it as ✓/✗ — same digest-keyed node, live flip.
+  if tool == "Bash" && input["command"].to_s.match?(TEST_CMD)
+    bridge("phase testing")
+    bridge("test start #{input['command']}")
+  end
 when "PostToolUse"
   case tool
   when "Edit", "Write", "MultiEdit", "NotebookEdit"
@@ -55,11 +71,9 @@ when "PostToolUse"
     bridge("edit #{path}") if path
   when "Bash"
     cmd = input["command"].to_s
-    # Only test-ish commands become TestRuns; the rest are noise for a plan view.
-    if cmd.match?(/\b(rspec|rake test|bundle exec rspec|npm test|pytest|go test)\b/)
+    if cmd.match?(TEST_CMD)
       status = failed?(response) ? "fail" : "ok"
-      bridge("phase testing")
-      bridge("test #{status} #{cmd}")
+      bridge("test #{status} #{cmd}") # re-emits the node PreToolUse started (◐ → ✓/✗)
     end
   end
 when "Stop", "SubagentStop"

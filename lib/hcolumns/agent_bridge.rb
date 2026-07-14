@@ -13,9 +13,13 @@ module HColumns
   # The vocabulary (one command per line, on stdin or argv):
   #
   #   session <key> <title…>   name the session (its Session node is the log root)
+  #   turn <label…>            a turn boundary — everything until the next marker
+  #                            belongs to this turn (ordinals derived at fold time)
   #   edit <path>              the agent touched a file → ProposedChange TOUCHES it
   #   phase <name>             editing/testing/reviewing/… → Session :phase (drives modes)
-  #   test <ok|fail> <cmd…>    a run → TestRun VERIFIED_BY the change
+  #   test <start|ok|fail> <cmd…>  a run's lifecycle → one TestRun node (digest-keyed
+  #                            by cmd) re-emitted per state, latest fold wins — the
+  #                            :phase pattern, so a live walk shows ◐ flip to ✓/✗
   #   log <text…>              an output/log line → LogLine the change EMITTED
   #   done                     the eof marker (the live badge flips to "complete")
   #
@@ -48,6 +52,7 @@ module HColumns
       ensure_header unless verb == "session"
       case verb
       when "session" then start(rest)
+      when "turn" then turn(rest)
       when "edit" then edit(rest)
       when "phase" then phase(rest)
       when "test" then test(rest)
@@ -106,6 +111,14 @@ module HColumns
       emit_obs(session, change, :PROPOSES, :agent, "the agent's working change-set")
     end
 
+    # A turn boundary. Deliberately just a marker: the fold assigns ordinals from
+    # log order (Graph#apply_turn), so this stateless process never has to know
+    # which turn number it's on — the log knows.
+    def turn(rest)
+      label = rest.to_s.strip
+      append(Persistence.line_for(kind: :turn, payload: { label: label.empty? ? nil : label, at: now }))
+    end
+
     def edit(rest)
       raw = rest.to_s.strip
       return if raw.empty?
@@ -126,15 +139,33 @@ module HColumns
       emit_node(session_node(name.to_sym))
     end
 
+    # A test run's lifecycle as node states (the juggler takeaway, survey #2:
+    # their tool-action state machine, done the event-sourced way). `start` emits
+    # the TestRun in :running; `ok`/`fail` RE-EMIT the same node (digest-keyed by
+    # cmd, same identity ⇒ same id) in its final state — latest fold wins, exactly
+    # how :phase drives the Session. In-flight work is visible in the columns and
+    # flips in place when the result lands. `ok`/`fail` still work standalone
+    # (today's after-the-fact usage) — the bridge is stateless, so no pairing.
+    TEST_STATES = {
+      "start" => { state: :running, glyph: "◐", word: "started" },
+      "ok" => { state: :passed, glyph: "✓", word: "passed" },
+      "fail" => { state: :failed, glyph: "✗", word: "failed" }
+    }.freeze
+
     def test(rest)
       status, cmd = rest.to_s.strip.split(/\s+/, 2)
       cmd = cmd.to_s.strip
-      passed = status == "ok"
-      run = Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "#{@session}:#{digest(cmd)}" },
-                     properties: { name: cmd.empty? ? "test run" : cmd, path: cmd,
-                                   output: ["#{passed ? 'PASS' : 'FAIL'} — #{cmd}"] })
+      spec = TEST_STATES.fetch(status, TEST_STATES["fail"])
+      run = test_node(cmd, spec)
       emit_node(run)
-      emit_obs(change_node, run, :VERIFIED_BY, :behavior, "#{passed ? 'passed' : 'failed'}: #{cmd}")
+      emit_obs(change_node, run, :VERIFIED_BY, :behavior, "#{spec[:word]}: #{cmd}")
+    end
+
+    def test_node(cmd, spec)
+      name = cmd.empty? ? "test run" : cmd
+      Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "#{@session}:#{digest(cmd)}" },
+               properties: { name: "#{spec[:glyph]} #{name}", state: spec[:state], path: cmd,
+                             output: ["#{spec[:word].upcase} — #{cmd}"] })
     end
 
     def log_line(rest)

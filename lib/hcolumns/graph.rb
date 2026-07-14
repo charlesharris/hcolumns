@@ -20,8 +20,14 @@ module HColumns
       @nodes = {}
       @edges = {}
       @flags = {}
+      @turns = []
       @log = log
     end
+
+    # Turns folded so far — [{index:, label:, at:, node_ids: []}]. The juggler
+    # takeaway (docs/notes/juggler-survey.md #1): a turn is a provenance grouping
+    # over the log, derived entirely from the order of :turn markers at fold time.
+    attr_reader :turns
 
     def add_node(node)
       @log&.append(kind: :node, payload: node)
@@ -48,14 +54,36 @@ module HColumns
       apply_observe(observation)
     end
 
-    # Fold an observation into the derived edge projection (no recording).
+    # Fold an observation into the derived edge projection (no recording). If a
+    # turn is open, the observation is stamped with it (a fold-time annotation —
+    # see Observation#turn) and its target counts as touched by the turn.
     def apply_observe(observation)
+      if (turn = @turns.last)
+        observation.turn = turn
+        turn[:node_ids] << observation.target_id
+      end
       edge = (@edges[observation.key] ||= Edge.new(
         subject_id: observation.subject_id,
         target_id: observation.target_id,
         type: observation.edge_type
       ))
       edge.add(observation)
+      self
+    end
+
+    # Record + fold a turn marker: everything folded after it (until the next
+    # marker) belongs to this turn. Ordinals are assigned here, from fold order —
+    # a stateless producer never numbers its own turns.
+    def record_turn(label: nil, at: nil)
+      payload = { label: label, at: at }
+      @log&.append(kind: :turn, at: at, payload: payload)
+      apply_turn(payload)
+      payload
+    end
+
+    # Fold a turn marker into the projection without recording (the replay path).
+    def apply_turn(payload)
+      @turns << { index: @turns.size + 1, label: payload[:label], at: payload[:at], node_ids: [] }
       self
     end
 

@@ -1,6 +1,21 @@
 {
-  "_comment": "hc-gzj: enable the live agent bridge. Copy to .claude/settings.json to opt in. Then, in the repo, run `hcol serve .hcolumns/live.jsonl --live` (or `walk`) and watch this session grow as you work. Override the log path with HCOL_BRIDGE_LOG.",
+  "_comment": "hc-gzj: enable the live agent bridge. Copy to .claude/settings.json to opt in. Then, in the repo, run `hcol serve .hcolumns/live.jsonl --live` (or `walk`) and watch this session grow as you work — turns partition it (UserPromptSubmit), test runs flip ◐ → ✓/✗ live (PreToolUse/PostToolUse). Override the log path with HCOL_BRIDGE_LOG.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",

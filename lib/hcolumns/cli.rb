@@ -517,9 +517,10 @@ module HColumns
                                      out-of-process producer: append events to the log in real time
           hcol bridge --log <file.jsonl> [--session KEY] [<command>]
                                      real agent bridge: append events for what an agent did, in a
-                                     neutral vocab (edit <path> · phase <name> · test ok|fail <cmd> ·
-                                     log <text> · done) — one per arg or stdin line. A thin hook feeds it
-                                     (see .claude/hooks/agent_bridge_hook.rb); watch with walk/serve --live
+                                     neutral vocab (turn <label> · edit <path> · phase <name> ·
+                                     test start|ok|fail <cmd> · log <text> · done) — one per arg or
+                                     stdin line. A thin hook feeds it (.claude/hooks/); watch with
+                                     walk/serve --live; the session's `turns` tab groups work per turn
           hcol walk <file.jsonl> --live    tail a producer's log; the cascade grows as events land
           hcol serve <file.jsonl> --live   …same, in a browser, pushed over SSE (run `produce` alongside)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
