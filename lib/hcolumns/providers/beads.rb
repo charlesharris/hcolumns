@@ -31,12 +31,21 @@ module HColumns
     class Beads
       MAX_BEADS = 200        # index bound, closed issues rank last
       PROSE_SCAN = 10_000    # chars of description/design/notes scanned for paths
+      KNOWN_SCHEMA = 49      # the bd schema_migrations version this provider was written against
 
       # relation-type mapping for well-known dependency kinds; anything unknown
       # falls back to the upcased type so custom kinds still walk.
       DEP_EDGES = {
         "parent-child" => { from_dependent: :CHILD_OF, from_dependency: :HAS_CHILD },
         "blocks" => { from_dependent: :BLOCKED_BY, from_dependency: :BLOCKS }
+      }.freeze
+
+      # A bead's lifecycle status as a glyph, carried in its display name so every
+      # renderer (TUI, web, facet) shows the plan's shape at a glance — the same
+      # vocabulary `bd list` uses. Unknown statuses fall back to the open glyph.
+      STATUS_GLYPH = {
+        "open" => "○", "in_progress" => "◐", "blocked" => "●",
+        "closed" => "✓", "deferred" => "❄"
       }.freeze
 
       class << self
@@ -105,10 +114,28 @@ module HColumns
         end
 
         def bead_node(root, row)
+          name = "#{status_glyph(row[:status])} #{row[:id]} #{row[:title]}".strip
           Node.new(type: :Bead, identity: { scheme: "bead", key: row[:id] },
-                   properties: { name: "#{row[:id]} #{row[:title]}".strip, bead_id: row[:id],
+                   properties: { name: name, bead_id: row[:id],
                                  title: row[:title], status: row[:status], priority: row[:priority],
                                  issue_type: row[:issue_type], beads_root: root })
+        end
+
+        def status_glyph(status)
+          STATUS_GLYPH.fetch(status, "○")
+        end
+
+        # Read the DB's schema_migrations version once per connection and warn if
+        # it's newer than what this provider was written against — the lesson of
+        # the depends_on_id -> depends_on_issue_id rename: a DB written by a newer
+        # bd can present columns we don't map. A missing table means pre-1.x bd
+        # (no schema_migrations before v49), which we read on a best-effort basis.
+        def guard_schema(client)
+          version = client.schema_version
+          return if version.nil? || version <= KNOWN_SCHEMA
+
+          warn "beads: schema v#{version} is newer than the v#{KNOWN_SCHEMA} this provider " \
+               "expects; some issue columns may be unmapped (update hcolumns' beads provider)"
         end
 
         def index_node(root, database)
@@ -126,7 +153,11 @@ module HColumns
           return nil unless available?
 
           ep = endpoint(root)
-          ep && Client.connect(ep)
+          return nil unless ep
+
+          client = Client.connect(ep)
+          guard_schema(client) if client
+          client
         end
 
         def shared_server?(beads_dir)
@@ -159,7 +190,7 @@ module HColumns
 
       def recognizes?(node)
         case node.identity[:scheme]
-        when "fs.path" then beads_root_dir?(node)
+        when "fs.path" then beads_root_dir?(node) || beads_file?(node)
         when "beads.index", "bead" then node.properties[:beads_root] == @root
         else false
         end
@@ -169,7 +200,12 @@ module HColumns
         return unless (client = self.class.client_for(@root))
 
         case node.identity[:scheme]
-        when "fs.path" then expand_root(node, graph, now: now, client: client)
+        when "fs.path"
+          if beads_root_dir?(node)
+            expand_root(node, graph, now: now, client: client)
+          else
+            expand_reverse(node, graph, now: now, client: client)
+          end
         when "beads.index" then expand_index(node, graph, now: now, client: client)
         when "bead" then expand_bead(node, graph, now: now, client: client)
         end
@@ -185,6 +221,14 @@ module HColumns
       def beads_root_dir?(node)
         path = Filesystem.path_of(node)
         path && File.directory?(path) && File.expand_path(path) == @root
+      end
+
+      # A real file under the beads root — the reverse-walk entrypoint. Cheap:
+      # a stat, no DB. The reverse index (built lazily on first file expansion)
+      # decides which files actually carry edges; here we just gate the tracker.
+      def beads_file?(node)
+        path = Filesystem.path_of(node)
+        path && File.file?(path) && File.expand_path(path).start_with?("#{@root}/")
       end
 
       def expand_root(node, graph, now:, client:)
@@ -263,6 +307,38 @@ module HColumns
         resolve_existing(candidates)
       end
 
+      # The reverse walk: from a source file, the beads that touch it. Beads don't
+      # index files, so we invert the same metadata/prose scan the forward TOUCHES
+      # uses — one bulk query over every bead, parsed into a path -> [bead] map
+      # cached for the Workspace (the ruby-const-index pattern). A file with no
+      # bead references just adds no edges. TOUCHED_BY mirrors TOUCHES, carrying
+      # the same honesty split: :agent for a metadata list, :inference for prose.
+      def expand_reverse(file_node, graph, now:, client:)
+        abs = File.expand_path(Filesystem.path_of(file_node))
+        reverse_index(client).fetch(abs, []).each do |ref|
+          bead = graph.add_node(self.class.bead_node(@root, ref[:row]))
+          where = ref[:kind] == :agent ? "listed in metadata" : "mentioned in text"
+          observe(graph, file_node, bead, :TOUCHED_BY, kind: ref[:kind], at: now,
+                                                       summary: "#{where} of #{ref[:row][:id]}")
+        end
+      end
+
+      def reverse_index(client)
+        @reverse_index ||= build_reverse_index(client)
+      end
+
+      # abs path -> [{row:, kind:}] for every bead that names it. metadata files
+      # win :agent; prose paths (minus the metadata-listed ones) are :inference.
+      def build_reverse_index(client)
+        index = Hash.new { |h, k| h[k] = [] }
+        client.reverse_source(limit: MAX_BEADS).each do |row|
+          listed = metadata_files(row[:metadata])
+          listed.each { |_rel, abs| index[abs] << { row: row, kind: :agent } }
+          prose_paths(row, exclude: listed.map(&:first)).each { |_rel, abs| index[abs] << { row: row, kind: :inference } }
+        end
+        index
+      end
+
       # [rel, abs] pairs for candidates that are real files under the root.
       def resolve_existing(rels)
         rels.filter_map do |rel|
@@ -289,6 +365,10 @@ module HColumns
         ISSUE_COLS = "id, title, status, priority, issue_type"
         BODY_SQL = "SELECT id, title, status, priority, issue_type, assignee, description, design, " \
                    "acceptance_criteria, notes, metadata, created_at, updated_at FROM issues WHERE id = ?"
+        # Enough of each issue to both build its node and scan it for file paths,
+        # in one round-trip — the backing query for the reverse (file -> bead) walk.
+        REVERSE_SQL = "SELECT id, title, status, priority, issue_type, description, design, notes, metadata " \
+                      "FROM issues LIMIT ?"
 
         def self.connect(endpoint)
           conn = Mysql.connect(endpoint[:host], endpoint[:user], nil, endpoint[:database], endpoint[:port])
@@ -323,6 +403,21 @@ module HColumns
           { id: r[0], title: r[1], status: r[2], priority: r[3], issue_type: r[4], assignee: r[5],
             description: r[6], design: r[7], acceptance_criteria: r[8], notes: r[9], metadata: r[10],
             created_at: r[11], updated_at: r[12] }
+        end
+
+        def reverse_source(limit:)
+          rows(REVERSE_SQL, limit).map do |r|
+            { id: r[0], title: r[1], status: r[2], priority: r[3], issue_type: r[4],
+              description: r[5], design: r[6], notes: r[7], metadata: r[8] }
+          end
+        end
+
+        # The bd schema version (schema_migrations, v49+). nil when the table is
+        # absent (pre-1.x bd) — the guard treats that as read-on-best-effort.
+        def schema_version
+          rows("SELECT MAX(version) FROM schema_migrations").first&.first
+        rescue StandardError
+          nil
         end
 
         private

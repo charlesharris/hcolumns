@@ -36,6 +36,14 @@ RSpec.describe HColumns::Providers::Beads do
     def body(id)
       @issues.find { |i| i[:id] == id }
     end
+
+    def reverse_source(limit:)
+      @issues.first(limit)
+    end
+
+    def schema_version = @schema_version
+
+    attr_writer :schema_version
   end
 
   ISSUES = [
@@ -158,6 +166,55 @@ RSpec.describe HColumns::Providers::Beads do
       listed = touches("hc-child").entries.first
       expect(prose.target.name.to_s).to end_with("real.rb")
       expect(prose.confidence).to be < listed.confidence
+    end
+  end
+
+  describe "the reverse walk (file -> beads that touch it)" do
+    def file_node(rel)
+      workspace.add_node(HColumns::Providers::Filesystem.node_for(File.join(@root, rel)))
+    end
+
+    def touched_by(rel)
+      column(file_node(rel).id).groups.find { |g| g.relation == :TOUCHED_BY }
+    end
+
+    it "links a file back to every bead that names it, metadata + prose" do
+      ids = touched_by("lib/real.rb").entries.map { |e| e.target.properties[:bead_id] }
+      expect(ids).to contain_exactly("hc-child", "hc-epic") # metadata list + prose mention
+    end
+
+    it "keeps the honesty split: a metadata list outranks a prose mention" do
+      by_id = touched_by("lib/real.rb").entries.to_h { |e| [e.target.properties[:bead_id], e] }
+      expect(by_id["hc-child"].confidence).to be > by_id["hc-epic"].confidence
+    end
+
+    it "adds no edges for a real file that no bead names" do
+      File.write(File.join(@root, "lib", "lonely.rb"), "# nobody references me\n")
+      expect(touched_by("lib/lonely.rb")).to be_nil
+    end
+  end
+
+  describe "status glyphs" do
+    it "carries the bead's status as a glyph in its display name" do
+      index_id = descend(column(root_node.id), :HAS_BEADS).entries.first.target.id
+      by_id = descend(column(index_id), :HAS_BEAD).entries.to_h { |e| [e.target.properties[:bead_id], e.target] }
+      expect(by_id["hc-epic"].name).to start_with("○")  # open
+      expect(by_id["hc-child"].name).to start_with("◐") # in_progress
+      expect(by_id["hc-done"].name).to start_with("✓")  # closed
+    end
+  end
+
+  describe "schema-version guard" do
+    it "warns when the DB schema is newer than the provider expects" do
+      client.schema_version = BEADS::KNOWN_SCHEMA + 1
+      expect { BEADS.guard_schema(client) }.to output(/newer/).to_stderr
+    end
+
+    it "stays quiet on a known-or-older schema, or a missing table (pre-1.x)" do
+      client.schema_version = BEADS::KNOWN_SCHEMA
+      expect { BEADS.guard_schema(client) }.not_to output.to_stderr
+      client.schema_version = nil
+      expect { BEADS.guard_schema(client) }.not_to output.to_stderr
     end
   end
 
