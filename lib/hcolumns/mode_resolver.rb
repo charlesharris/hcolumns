@@ -21,7 +21,7 @@ module HColumns
       File: %i[default source blame details],
       Directory: %i[default git details],
       Commit: %i[gitdiff default details],
-      CommitFile: %i[gitdiff details],
+      CommitFile: %i[gitdiff commitsource details], # diff-first (blame arrival asks "what changed"), source a tab away
       ProposedChange: %i[diff reviewer details],
       TestRun: %i[output default details],
       LogLine: %i[output default details],

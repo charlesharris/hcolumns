@@ -45,6 +45,29 @@ module HColumns
         lines.first(limit) + ["… (#{lines.size - limit} more lines truncated)"]
       end
 
+      # The file's full content *as of* a commit (`git show sha:rel`) — the blob,
+      # not the diff. Works even for a file a later commit deleted (the content
+      # lived at sha). Returns [lines, truncated?, total] like Filesystem.read_lines
+      # so the source facet renders it the same way; nil when the path is absent
+      # at that revision (a directory, a not-yet-existing file).
+      def self.show_at(repo, sha, rel, limit: 400)
+        # A commit that DELETED the file has no blob at sha; the content lived at its
+        # parent, so fall back to sha^ — the file as it stood just before this commit.
+        lines = blob_lines(repo, "#{sha}:#{rel}") || blob_lines(repo, "#{sha}^:#{rel}")
+        return nil unless lines
+
+        truncated = lines.size > limit
+        [truncated ? lines.first(limit) : lines, truncated, lines.size]
+      end
+
+      # A blob's lines at a `rev:path` spec, or nil when the path is absent there
+      # (a directory, a not-yet-existing / already-deleted file). Distinguishes an
+      # empty-but-present file (success, []) from an absent one (failure, nil).
+      def self.blob_lines(repo, spec)
+        out, _err, status = Open3.capture3("git", "-C", repo, "show", "--no-color", spec)
+        status.success? ? out.split("\n") : nil
+      end
+
       # Per-line blame (vim-fugitive style): each source line tagged with the commit
       # that last touched it. One `--porcelain` call gives the sha per line plus each
       # commit's author/summary/time (only on its first appearance — accumulated in
@@ -191,9 +214,16 @@ module HColumns
 
         commit_files(sha).each do |rel|
           abs = File.join(@root, rel)
-          next unless File.exist?(abs)
-
-          target = graph.add_node(Filesystem.node_for(abs))
+          # An existing file unifies with the live code graph (fs.path); one this
+          # commit deleted has no fs.path node, but the blob still lives at sha —
+          # so link a CommitFile, viewable via the source-at-commit / diff facets.
+          target =
+            if File.exist?(abs)
+              graph.add_node(Filesystem.node_for(abs))
+            else
+              graph.add_node(self.class.commit_file_node(@root, sha, abs, rel: rel,
+                                                         subject: meta[:subject], author: meta[:author]))
+            end
           observe(graph, node,target, :CHANGED, weight: 1.0, kind: :history,
                   at: meta[:date] || now, summary: "changed in #{short(sha)}")
         end

@@ -105,10 +105,14 @@ module HColumns
       time ? time.strftime("%Y-%m-%d") : "?"
     end
 
+    # Repo-relative path, resolving symlinks on both sides first — repo_root comes
+    # from `git rev-parse` (realpath), so a repo under a symlinked prefix (e.g. the
+    # macOS /var -> /private/var tmpdir) would otherwise yield a broken `../../` rel
+    # that `git show sha:rel` can't resolve.
     def relative(repo, path)
-      Pathname.new(path).relative_path_from(Pathname.new(repo)).to_s
+      Pathname.new(File.realpath(path)).relative_path_from(Pathname.new(File.realpath(repo))).to_s
     rescue StandardError
-      path
+      Pathname.new(path).relative_path_from(Pathname.new(repo)).to_s rescue path
     end
 
     def readable_path(node)
@@ -162,6 +166,50 @@ module HColumns
                                target_id: file.id, glyph: "▤")
       end
       PanelSection.new(heading: "ZOOM OUT", items: items)
+    end
+  end
+
+  # The file's contents *as of a commit* — SourceMode's sibling for a CommitFile
+  # (the blame/diff landing node). Reads `git show sha:rel` (the blob, not the
+  # diff), so it renders even a file a later commit deleted. Same numbered listing
+  # as SourceMode, sitting beside the file-scoped diff so a CommitFile answers both
+  # "what changed here" and "what did the whole file look like".
+  class CommitSourceMode < Mode
+    MAX_LINES = 400
+
+    def initialize(name: :commitsource)
+      super(name: name)
+    end
+
+    # Cheap gate (no subprocess): a CommitFile carrying the coordinates git needs.
+    def applies?(node)
+      node.type == :CommitFile &&
+        !node.properties[:sha].nil? && !node.properties[:repo].nil? && !node.properties[:rel].nil?
+    end
+
+    def panel(node, _workspace, now:)
+      content = Providers::Git.show_at(node.properties[:repo], node.properties[:sha],
+                                       node.properties[:rel], limit: MAX_LINES)
+      sha = node.properties[:sha].to_s[0, 7]
+      header = ["#{node.properties[:rel]} @ #{sha}", summary(content), ""].reject(&:empty?)
+      Panel.new(node: node, mode: name,
+                sections: [PanelSection.new(heading: "SOURCE @ #{sha}", lines: header + body_lines(content))])
+    end
+
+    private
+
+    def summary(content)
+      return "(source unavailable at this commit)" unless content
+
+      _lines, truncated, total = content
+      "#{total} line(s)#{truncated ? " · showing first #{MAX_LINES}" : ''}"
+    end
+
+    def body_lines(content)
+      return [] unless content
+
+      lines, = content
+      lines.each_with_index.map { |line, i| format("%4d  %s", i + 1, line) }
     end
   end
 

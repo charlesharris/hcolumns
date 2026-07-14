@@ -93,6 +93,51 @@ RSpec.describe "per-line blame flow" do
     end
   end
 
+  describe HColumns::CommitSourceMode do
+    let(:mode) { HColumns::Mode[:commitsource] }
+    # the CommitFile the second commit produced for f.rb (via the blame landing)
+    let(:commit_file) do
+      blame = HColumns::Mode[:blame].panel(file_node, workspace, now: now)
+      workspace.node(blame.items[1].target_id)
+    end
+
+    it "renders the file's blob as of the commit, not the diff" do
+      expect(mode.applies?(commit_file)).to be true
+      panel = mode.panel(commit_file, workspace, now: now)
+      sha = commit_file.properties[:sha][0, 7]
+      expect(panel.sections.first.heading).to eq("SOURCE @ #{sha}")
+      body = panel.sections.first.lines.join("\n")
+      expect(body).to include("one").and include("TWO changed").and include("three") # the whole file @ the 2nd commit
+      expect(body).not_to include("+TWO changed") # a blob, no diff markers
+    end
+
+    it "shows an older revision's content, before a later line existed" do
+      # line 1's blame points at the FIRST commit, when f.rb was just "one\ntwo\n"
+      first = workspace.node(HColumns::Mode[:blame].panel(file_node, workspace, now: now).items[0].target_id)
+      body = mode.panel(first, workspace, now: now).sections.first.lines.join("\n")
+      expect(body).to include("two")
+      expect(body).not_to include("three") # "three" didn't exist yet at the first commit
+    end
+
+    it "is offered by the resolver as a tab on a CommitFile, diff still auto" do
+      modes = HColumns::ModeResolver.new.modes_for(commit_file).map(&:name)
+      expect(modes.first).to eq(:gitdiff) # diff-first (blame arrival asks "what changed")
+      expect(modes).to include(:commitsource)
+    end
+
+    it "still renders a file a later commit deleted (the blob lives at its sha)" do
+      File.delete(path("f.rb"))
+      commit("third — drop f.rb", date: "2026-03-03T00:00:00")
+      head = `git -C #{@repo} rev-parse HEAD`.strip
+      commit_node = workspace.add_node(HColumns::Providers::Git.commit_node(@repo, head, subject: "drop"))
+      changed = workspace.column_for(commit_node.id, now: now).groups.find { |g| g.relation == :CHANGED }
+      deleted = changed.entries.first.target
+      expect(deleted.type).to eq(:CommitFile) # a deleted file has no fs.path -> a CommitFile
+      body = mode.panel(deleted, workspace, now: now).sections.first.lines.join("\n")
+      expect(body).to include("TWO changed") # its content, viewable though the file is gone from disk
+    end
+  end
+
   describe "blame -> file-scoped diff -> zoom out to the full commit" do
     let(:diff) { HColumns::Mode[:gitdiff] }
 

@@ -1,6 +1,6 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-14 · **Branch:** `main` · **Tests:** 205 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-14 · **Branch:** `main` · **Tests:** 209 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
@@ -67,13 +67,14 @@ This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](
 > made today shapes tomorrow's columns. Real walks are now log-backed (providers record as they expand).
 >
 > **Pick up next (one of):**
-> **source-at-commit facet** (`hc-48p` — now dogfooded: its `metadata` file list lights up the reverse walk) ·
-> **real external agent** appending to the log (`hc-gzj` — converges with beads via issue `metadata` file
-> lists, which now feed the reverse walk *and* which the agent bridge would write) · **planner facet polish**
-> (a `bead` facet that foregrounds acceptance-criteria/blocker chains; a status-glyph legend) · **branch/history
-> browsing polish** · **shareable cascade-state URLs** · **goal biases *ranking*** (the "soil" step into the
-> tuner). The beads provider arc (slices 1–3) is complete: forward walk, reverse walk, ready/blocked, planner
-> lens. The backlog now lives in beads itself (`bd list`; `hcol walk .` → the beads index). Trade-offs in
+> **real external agent** appending to the log (`hc-gzj` — the one bead still open+ready; converges with beads
+> via issue `metadata` file lists, which now feed the reverse walk *and* which the agent bridge would write) ·
+> **planner facet polish** (a `bead` facet foregrounding acceptance-criteria/blocker chains; a status-glyph
+> legend) · **branch/history browsing polish** (the source-at-commit facet is now in, so a commit walk reads
+> fully) · **shareable cascade-state URLs** · **goal biases *ranking*** (the "soil" step into the tuner). The
+> beads provider arc (slices 1–3) is complete and the git-exploration loop is closed (blame → scoped diff →
+> source-at-commit → zoom out). The backlog lives in beads itself (`bd list`; `hcol walk .` → the beads index,
+> `--role planner` leads with ready work). Trade-offs in
 > [§8](#8-next-up--open-threads); decide the load-bearing ones *with* Charris first (he earns
 > architecture through worked use cases — see project memory).
 
@@ -111,6 +112,7 @@ source is just a new provider that appends observations.
 
 | Commit | Layer |
 |---|---|
+| `pending` | **24** — **source-at-commit facet (`hc-48p`): a CommitFile's contents, not just its diff**. A `CommitFile` (the blame/diff landing node) could only show `gitdiff`+`details` — no way to read the file *as of* that commit. New **`CommitSourceMode`** (`commitsource`), SourceMode's sibling for a CommitFile: reads `Git.show_at` (`git show sha:rel` — the blob, not the diff) as a numbered listing, added to the `CommitFile` POLICY **diff-first** (`gitdiff commitsource details` — blame arrival asks "what changed"; source is one Tab away). So a CommitFile now answers both "what changed here" (diff) and "what did the whole file look like then" (source). **Deleted-file fix** (the bead's second ask): `expand_commit` used to *skip* files a commit deleted (no `fs.path` to unify with) — it now links a **`CommitFile`** for them instead, so a commit's `CHANGED` list is complete and a deleted file is still viewable; `show_at` falls back to `sha^:rel` when the blob is absent at `sha` (a deletion commit's content lived at its parent), distinguishing an empty-but-present file (success, `[]`) from an absent path (nil). En route, fixed a latent **`rel` bug**: `BlameMode` computed the repo-relative path without resolving symlinks, so a repo under a symlinked prefix (macOS `/var`→`/private/var`, or any symlinked checkout) produced a broken `../../` rel that `git show sha:rel` can't resolve — now realpath-normalized on both sides. 4 specs (real-repo harness: blob at a commit, an older revision before a line existed, resolver diff-first, a file deleted by a later commit); live-verified on this repo (blame `mode.rb` → CommitFile → `SOURCE @ f4cb764`, tabs `[gitdiff, commitsource, details]`). |
 | `b891289` | **23** — **beads slice 3: ready/blocked views ("what can I start now")**. The planner's first question, answered by the DB's own computation. bd ships `ready_issues` and `blocked_issues` as **SQL views** (ready = open with no active blocker; blocked = an open issue blocks it), so hcolumns reads the DB's answer rather than re-deriving the dependency math — the active-client posture. The Beads **index** node now hangs two overlay edges beside `HAS_BEAD`: `HAS_READY` → each bead the ready view returns, `HAS_BLOCKED` → each blocked one (`Client#ready`/`#blocked`, P-then-id ordered, bounded `MAX_BEADS`). The same bead node carries multiple edges (it's both "a bead" and "ready"), exactly as the repo root carries `HAS_BRANCH`+`HEAD` — an empty view just omits its group (blocked is empty on our repo today, so no `HAS_BLOCKED` shows). The **planner lens** floats `HAS_READY` (1.9) above the full `HAS_BEAD` list (1.6), so standing on the index the first group *is* the startable work. The views are 1.x-only; on an older DB a view query rescues to `[]` (the overlay just vanishes — the schema guard is what signals the version gap). 5 specs (40 in the beads/lens files, 205 total); live-verified: the index's `HAS_READY` is exactly `bd ready` (hc-48p, hc-gzj), `HAS_BLOCKED` empty like `bd blocked`. |
 | `b291ca3` | **22** — **beads slice 2: reverse walk + planner lens + status glyphs + schema guard**. The plan layer becomes *navigable as a plan*, and the walk closes back on itself. **(1) Reverse walk (file → beads)** — `recognizes?` now fires on *any* real file under the beads root, and expanding one adds `TOUCHED_BY` edges to every bead that names it, mirroring the forward `TOUCHES` with the same honesty split (`:agent` for a `metadata` file list, `:inference` for a path scraped from prose). The lookup is a **cached reverse index** (`abs path → [{row, kind}]`), built lazily on the first file expansion from **one bulk query** (`reverse_source`, bounded `MAX_BEADS`) and held for the Workspace — the ruby-const-index pattern, so only the first file pays. A file no bead names simply adds no edges. So a walk now runs bead → file → blame → commit *and* file → the beads that touch it. **(2) Planner lens** (`lenses/planner_lens.rb`, `--role planner`) lifts the plan families (`HAS_BEADS`/`HAS_BEAD`, the dependency web, `TOUCHES`/`TOUCHED_BY` — the reverse edge highest, so from a file the beads surface first) and dims filesystem/code/history noise; the agent's `metadata` word is mixed a touch above prose. **(3) Status → glyph** — a bead carries its lifecycle as the same glyph `bd` uses (`○◐●✓❄`) in its display name, so every renderer (TUI, web, `bead` facet) shows the plan's shape at a glance. **(4) Schema-version guard** — `connect` reads `schema_migrations` once and warns if the DB is newer than the `KNOWN_SCHEMA=49` this provider maps (the lesson of the `depends_on_id`→`depends_on_issue_id` rename); a missing table = pre-1.x, read best-effort. 7 new specs (35 in the beads/lens files, 200 total); live-verified against the shared dolt server (:3308): `client_for` connects, `schema_version` reads 49 (no false warning), `reverse_source` round-trips the live schema, planner lifts `HAS_BEADS` over `CONTAINS`, glyphs render. No live `TOUCHED_BY` edges *yet* — no current bead names an in-repo file (all `metadata` is `{}`); dogfooding a file association is the demo. |
 | `87c58de` | **21** — **node flags: uprank/downrank/exclude as events, biasing rank only**. The feature Charris asked for after `.beads/interactions.jsonl` noise: flag any node and the judgment follows it everywhere. Two decisions shape it (his calls): **(1) flags are a bias layer** — `Lens#bias` multiplies the *score* (`up` ×1.5, `down` ×0.4), `exclude` hides at build time; edge **confidence is never touched**, the rank reason carries the visible `⚑level (by)`, and the details facet still shows excluded edges (opinion ≠ deletion). **(2) flag-as-event with the log plumbing** — a `:flag` event kind (the first *interaction* event; payload a plain hash, last-flag-wins so `:clear` is the undo), folded by `Graph#apply_flag` beside nodes/edges, replayed by `EventLog#fold`/`project`. **`FlagStore`** is the first accreting on-disk log: each flag appends one JSONL line to `.hcolumns/flags.jsonl` (Persistence codec, so `:level`/Time survive) and replays into the next session's graph — deliberately flags-only (provider observations re-derive from the world; persisting them would double-fold confidence). Real CLI walks now run a **log-backed graph** (the 2b seam, finally used for code) with the store attached. Driven from all three surfaces: TUI keys `+ - x u` → `Cascade#flag_selected` (re-ranks the walked path live), web `/flag?id=&level=` + the same keys on the selected item (re-fetches open columns), and `hcol flag <path> <level>` for bulk/scripted flagging. 10 specs; live-verified: `hcol flag Gemfile.lock down` from one process sinks it (⚑ visible, bar still 1.00) in a fresh `explore .`, exclude/clear round-trip. |
@@ -190,8 +192,9 @@ mode.rb            Mode#panel(node,ws,now)->Panel + a name->mode registry. LensM
 content_modes.rb   content facets (a node's contents, not relations; derived views, not graph-folded):
                    SourceMode (file text, numbered/bounded), BlameMode (per-line blame; each line an item
                    -> a CommitFile; materializes those nodes), GitDiffMode (Commit -> full git show, or a
-                   CommitFile -> file-scoped diff + ZOOM OUT items), OutputMode (TestRun/LogLine ->
-                   captured :output), BeadMode (a bead's body: description/design/acceptance/notes, read
+                   CommitFile -> file-scoped diff + ZOOM OUT items), CommitSourceMode (a CommitFile's blob
+                   AS OF its commit via git show sha:rel; falls back to sha^ for a deletion commit),
+                   OutputMode (TestRun/LogLine -> captured :output), BeadMode (a bead's body: description/design/acceptance/notes, read
                    live from the beads DB via the provider's shared client). Each applies? gates its tab
                    to real content
 mode_resolver.rb   node type -> ranked [Mode] (head = auto). A session's phase floats PHASE_PREFERENCE
@@ -274,7 +277,8 @@ bundle exec rspec                 # 127 examples
 # lenses — same graph, different surface
 # per-line blame (vim-fugitive style): open a file, Tab to `blame`, descend a line
 ./exe/hcol walk lib/hcolumns/cli.rb          # Tab to the `blame` tab; each line → the commit that touched it
-                                             # descend a line → file-scoped diff → "full commit" row zooms out
+                                             # descend a line → file-scoped diff (Tab → `commitsource`: the file AS OF
+                                             #   that commit) → "full commit" row zooms out
 
 ./exe/hcol explore . --role git              # lift commits/branches, dim files
 ./exe/hcol explore lib/hcolumns/cascade.rb --role reviewer   # strict: structure-first, weak edges hidden
