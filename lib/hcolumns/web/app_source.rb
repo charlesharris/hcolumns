@@ -71,6 +71,78 @@ module HColumns
           @locked
         end
       end
+
+      # Locked, plus re-projection: the graph is a projection of the world, so
+      # when the world moves, rebuild it rather than patch it. `probe` returns a
+      # cheap fingerprint of the pull sources (git HEAD, beads storage, …); when
+      # it changes, `pump` swaps in a freshly built App under the lock. The swap
+      # is safe by construction — everything user-visible replays (flags from
+      # their store, the session from its log, pull strata re-derive lazily).
+      # `version` carries a generation term so a swap bumps it even though the
+      # re-folded log reports the same count — that's what makes SSE clients
+      # re-fetch their open columns against the fresh graph.
+      class Refreshing
+        class SwappingApp
+          DELEGATED = %i[done? panel root flag live? root_id].freeze
+
+          def initialize(build, probe, interval, mutex)
+            @build = build
+            @probe = probe
+            @interval = interval
+            @mutex = mutex
+            @app = build.call
+            @fingerprint = probe.call
+            @generation = 0
+            @probed_at = monotime
+          end
+
+          # The one hook point: every serving path pumps a live app before it
+          # answers, so "release due events" is also where the world gets a
+          # (throttled) second look.
+          def pump
+            @mutex.synchronize do
+              reproject_if_moved
+              @app.pump
+            end
+          end
+
+          def version
+            @mutex.synchronize { @app.version + @generation }
+          end
+
+          DELEGATED.each do |method|
+            define_method(method) do |*args, **kwargs|
+              @mutex.synchronize { @app.public_send(method, *args, **kwargs) }
+            end
+          end
+
+          private
+
+          def reproject_if_moved
+            return if monotime - @probed_at < @interval
+
+            @probed_at = monotime
+            current = @probe.call
+            return if current == @fingerprint
+
+            @fingerprint = current
+            @app = @build.call
+            @generation += 1
+          end
+
+          def monotime
+            Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          end
+        end
+
+        def initialize(build, probe:, interval: 2.0)
+          @swapping = SwappingApp.new(build, probe, interval, Mutex.new)
+        end
+
+        def checkout
+          @swapping
+        end
+      end
     end
   end
 end

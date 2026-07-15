@@ -417,11 +417,48 @@ module HColumns
     # connections can see. The push stratum (the bridge log's tail) folds into the
     # same graph, mounted under the root by BridgeMount.
     def project_server(dir, root: :dir)
-      workspace, start, feed, session = composed_target(dir, root: root)
-      app = Web::App.new(workspace: workspace, root_id: start, now: now,
-                         session: session, feed: feed)
-      Web::Server.new(apps: Web::AppSource::Locked.new(app), streaming: true,
-                      port: @opts[:port] || 4567)
+      build = lambda do
+        # Re-pin the clock per projection: a long-running server otherwise does
+        # recency/decay math against its boot time. Safe: the builder only runs
+        # under the Refreshing lock (and once here, before threads exist).
+        @now = nil
+        workspace, start, feed, session = composed_target(dir, root: root)
+        Web::App.new(workspace: workspace, root_id: start, now: now,
+                     session: session, feed: feed)
+      end
+      apps = Web::AppSource::Refreshing.new(build, probe: project_probe(dir))
+      Web::Server.new(apps: apps, streaming: true, port: @opts[:port] || 4567)
+    end
+
+    # A cheap fingerprint of the pull sources — sits on the request path
+    # (throttled), so file stats only: git's reflog head (moves on every
+    # commit/checkout/reset, packed-refs-proof), the beads storage dir's
+    # entries, and the served root's own mtime (top-level creates). The bridge
+    # log is deliberately NOT here — it streams; re-projecting per event would
+    # thrash. Deeper fs changes ride along with the next probe hit.
+    def project_probe(dir)
+      repo = Providers::Git.repo_root(dir)
+      beads_root = Providers::Beads.available? && Providers::Beads.root_for(dir)
+      beads_dir = beads_root && File.join(beads_root, ".beads") # root_for is the PROJECT root
+      lambda do
+        parts = [stat_fingerprint(dir)]
+        parts << stat_fingerprint(File.join(repo, ".git", "logs", "HEAD")) if repo
+        if beads_dir && File.directory?(beads_dir)
+          Dir.children(beads_dir).sort.each do |entry|
+            next if entry == "backup" # bd's backup blobs churn without data changes
+
+            parts << stat_fingerprint(File.join(beads_dir, entry))
+          end
+        end
+        parts
+      end
+    end
+
+    def stat_fingerprint(path)
+      stat = File.stat(path)
+      [path, stat.mtime.to_f, stat.size]
+    rescue SystemCallError
+      [path, nil]
     end
 
     def missing(arg)
