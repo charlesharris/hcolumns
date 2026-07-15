@@ -73,6 +73,17 @@ RSpec.describe HColumns::TailReader do
     expect(reader.done?).to be(true)
   end
 
+  it "un-flips done? when an accreting log speaks again after a stale eof" do
+    reader = described_class.new(@path)
+    graph = HColumns::Graph.new
+    append(line(:node, node("a")), HColumns::Persistence.eof_line) # a past session's close
+    append(line(:node, node("b")))                                 # the next session appends
+
+    expect(reader.release(into: graph)).to be(true)
+    expect(reader.done?).to be(false) # the stale marker mid-log must not deafen the tail
+    expect(graph.node(node("b").id)).not_to be_nil
+  end
+
   it "exposes its own log so the projection can be re-persisted or versioned" do
     reader = described_class.new(@path)
     graph = HColumns::Graph.new

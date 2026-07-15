@@ -232,7 +232,11 @@ module HColumns
       turns = workspace.graph.turns
       return empty_panel(node) if turns.empty?
 
-      Panel.new(node: node, mode: name, sections: turns.map { |t| section_for(t, workspace) })
+      # Newest turn first: in a live session the current turn is what you're
+      # watching, and it should grow at the top, not below the fold.
+      sections = turns.reverse.map { |t| section_for(t, workspace) }
+      sections.unshift(totals_section(turns)) if turns.any? { |t| t[:tokens] }
+      Panel.new(node: node, mode: name, sections: sections)
     end
 
     private
@@ -247,8 +251,38 @@ module HColumns
         PanelItem.new(label: n.name.to_s, target_id: n.id, glyph: "·")
       end
       label = turn[:label] ? " — #{turn[:label]}" : ""
-      heading = "TURN #{turn[:index]}#{label} (#{items.size} node#{items.size == 1 ? '' : 's'})"
+      heading = "TURN #{turn[:index]}#{label} " \
+                "(#{items.size} node#{items.size == 1 ? '' : 's'}#{tokens_suffix(turn[:tokens])})"
       PanelSection.new(heading: heading, items: items)
+    end
+
+    # Session-wide totals, derived by summing turns at render time — the log
+    # records per-turn observations; aggregates are the fold's business.
+    def totals_section(turns)
+      sums = turns.filter_map { |t| t[:tokens] }.each_with_object(Hash.new(0)) do |tokens, acc|
+        tokens.each { |key, count| acc[key] += count }
+      end
+      line = "#{abbrev(context_of(sums))} in → #{abbrev(sums[:out])} out across #{turns.size} turns"
+      PanelSection.new(heading: "TOKENS", lines: [line])
+    end
+
+    # "in" is the full context the model saw: fresh input + both cache sides.
+    # The split stays in the event for a display that wants it finer-grained.
+    def context_of(tokens)
+      tokens.values_at(:in, :cache_read, :cache_create).compact.sum
+    end
+
+    def tokens_suffix(tokens)
+      return "" unless tokens
+
+      " · #{abbrev(context_of(tokens))}→#{abbrev(tokens[:out] || 0)}"
+    end
+
+    def abbrev(count)
+      return count.to_s if count < 1000
+      return format("%.1fk", count / 1000.0).sub(".0k", "k") if count < 1_000_000
+
+      format("%.1fM", count / 1_000_000.0).sub(".0M", "M")
     end
   end
 

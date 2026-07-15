@@ -232,8 +232,8 @@ RSpec.describe HColumns::Providers::Beads do
       expect(view_ids(:HAS_BEAD)).to include("hc-done") # closed: in the full list, neither ready nor blocked
     end
 
-    it "planner floats ready work above the full bead list" do
-      weights = HColumns::Lens.preset(:planner).relation_weights
+    it "the beads lens floats ready work above the full bead list" do
+      weights = HColumns::Lens.preset(:beads).relation_weights
       expect(weights.fetch(:HAS_READY)).to be > weights.fetch(:HAS_BEAD)
     end
 

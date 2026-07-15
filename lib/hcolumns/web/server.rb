@@ -21,18 +21,22 @@ module HColumns
 
       attr_reader :host, :port
 
-      # Two ways in. `Server.new(app)` holds one shared App (static serve, or the
-      # in-memory Feed live demo pumped per request — single-threaded, /state poll).
-      # `Server.new(app_factory:, streaming: true)` builds a *fresh* App per
-      # connection from the factory: each connection projects its own tail of the
-      # shared read-only log, so concurrent connections (a long-lived /events stream
-      # beside /panel fetches) share no mutable state and need no lock.
-      def initialize(app = nil, host: "127.0.0.1", port: 4567, app_factory: nil, streaming: false)
-        @app_factory = app_factory || -> { app }
+      # Three ways in, all resolving to an AppSource (the concurrency seam — see
+      # app_source.rb). `Server.new(app)` wraps one shared App in a Single source
+      # (static serve, or the in-memory Feed demo — single-threaded, /state poll).
+      # `Server.new(app_factory:, streaming: true)` wraps the factory in a
+      # PerConnection source: each connection projects its own graph from the
+      # shared read-only sources, so a long-lived /events stream beside /panel
+      # fetches shares no mutable state and needs no lock. `apps:` passes any
+      # source directly — how a mutex-based shared strategy would plug in.
+      def initialize(app = nil, host: "127.0.0.1", port: 4567, app_factory: nil,
+                     streaming: false, apps: nil)
+        @apps = apps ||
+                (app_factory ? AppSource::PerConnection.new(app_factory) : AppSource::Single.new(app))
         @streaming = streaming
         @host = host
         @port = port
-        sample = @app_factory.call # a representative app for the shell (root id + flags)
+        sample = @apps.checkout # a representative app for the shell (root id + flags)
         @root_id = sample.root_id
         @live = sample.live?
       end
@@ -48,7 +52,7 @@ module HColumns
       def respond(method, path, query)
         return [405, "text/plain", "method not allowed\n"] unless method == "GET"
 
-        app = @app_factory.call
+        app = @apps.checkout
         app.pump if app.live?
 
         case path
@@ -115,7 +119,7 @@ module HColumns
                      "Cache-Control: no-cache\r\n" \
                      "Connection: keep-alive\r\n\r\n")
         socket.flush
-        app = @app_factory.call
+        app = @apps.checkout # held for the stream's life: its tail advances incrementally
         last = nil
         loop do
           app.pump if app.live?

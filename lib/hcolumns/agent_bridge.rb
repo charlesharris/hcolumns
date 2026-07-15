@@ -56,6 +56,7 @@ module HColumns
       when "edit" then edit(rest)
       when "phase" then phase(rest)
       when "test" then test(rest)
+      when "usage" then usage(rest)
       when "log" then log_line(rest)
       when "done", "finish" then finish
       else warn "bridge: ignoring unknown command #{verb.inspect}"
@@ -93,13 +94,14 @@ module HColumns
     end
 
     # The header is written once — only when the log is still empty, so repeated
-    # hook processes don't restack it. force: a `session` command always (re)writes
-    # the spine with the just-named key/title.
+    # hook processes don't restack it; a later process *adopts* the spine already
+    # on disk instead. force: a `session` command always (re)writes the spine with
+    # the just-named key/title.
     def ensure_header(force: false)
       return if @header_done
 
       @header_done = true
-      return if !force && File.exist?(@path) && !File.zero?(@path)
+      return adopt_spine if !force && File.exist?(@path) && !File.zero?(@path)
 
       session = session_node(:editing)
       agent = agent_node
@@ -109,6 +111,27 @@ module HColumns
       emit_node(change)
       emit_obs(session, agent, :DRIVEN_BY, :structure, "session actor")
       emit_obs(session, change, :PROPOSES, :agent, "the agent's working change-set")
+    end
+
+    # A fresh process can't know which key the log was opened under — assuming the
+    # default would hang every edge off a spine that was never emitted (found live,
+    # second dogfood session: a `session dogfood` header, then weeks of hook
+    # processes writing edges from the ghost "live:c1"). The log knows: recover
+    # key/title from its first Session node, so "same identity ⇒ same id" holds
+    # across processes no matter what the session was named.
+    def adopt_spine
+      File.foreach(@path) do |line|
+        parsed = Persistence.parse_line(line) rescue nil
+        next unless parsed.is_a?(Hash) && parsed[:kind] == :node
+
+        node = parsed[:payload]
+        next unless node.identity[:scheme] == "agent.session"
+
+        @session = node.identity[:key]
+        name = node.properties[:name].to_s
+        @title = name.delete_prefix("Task: ") if name.start_with?("Task: ")
+        break
+      end
     end
 
     # A turn boundary. Deliberately just a marker: the fold assigns ordinals from
@@ -166,6 +189,18 @@ module HColumns
       Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "#{@session}:#{digest(cmd)}" },
                properties: { name: "#{spec[:glyph]} #{name}", state: spec[:state], path: cmd,
                              output: ["#{spec[:word].upcase} — #{cmd}"] })
+    end
+
+    # The open turn's token totals — `usage in=42000 out=3200 cache_read=… cache_create=…`.
+    # TOTALS, not deltas: the fold is last-word-wins (Graph#apply_usage), so this
+    # stateless process can re-report the running numbers at any frequency —
+    # once at turn end, or per tool call for live ticking — without ever
+    # double-counting. Unknown keys ride along; the display picks what it shows.
+    def usage(rest)
+      tokens = rest.to_s.scan(/([a-z_]+)=(\d+)/).to_h { |key, value| [key.to_sym, value.to_i] }
+      return if tokens.empty?
+
+      append(Persistence.line_for(kind: :usage, payload: { tokens: tokens, at: now }))
     end
 
     def log_line(rest)

@@ -87,6 +87,23 @@ module HColumns
       self
     end
 
+    # Record + fold the open turn's token usage. The payload carries the turn's
+    # running TOTALS, not deltas: the fold is last-word-wins (like :phase), so a
+    # stateless producer can re-report at any frequency without double-counting.
+    def record_usage(tokens:, at: nil)
+      payload = { tokens: tokens, at: at }
+      @log&.append(kind: :usage, at: at, payload: payload)
+      apply_usage(payload)
+      payload
+    end
+
+    # Fold usage into the open turn without recording (the replay path). Usage
+    # with no turn open has nothing to attach to and is dropped.
+    def apply_usage(payload)
+      @turns.last[:tokens] = payload[:tokens] if @turns.any?
+      self
+    end
+
     # Record + fold a human flag on a node. This is opinion, not evidence: it
     # never touches an edge or its confidence — lenses read it as a score bias
     # (see Lens#bias), so the inspector keeps showing the untouched truth.

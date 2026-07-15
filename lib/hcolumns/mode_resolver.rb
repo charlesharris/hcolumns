@@ -19,7 +19,10 @@ module HColumns
       TestFile: %i[reviewer default source blame details],
       Doc: %i[default source blame details],
       File: %i[default source blame details],
-      Directory: %i[default git details],
+      # A directory's tabs are the stratum switcher: the same node re-lensed
+      # per world (files / git / plan / session), each lifting its stratum's
+      # sections to the top and dimming the rest — never hiding.
+      Directory: %i[default filesystem git beads session details],
       Commit: %i[gitdiff default details],
       CommitFile: %i[gitdiff commitsource details], # diff-first (blame arrival asks "what changed"), source a tab away
       ProposedChange: %i[diff reviewer details],

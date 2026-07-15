@@ -43,6 +43,47 @@ end
 # noise for a plan view.
 TEST_CMD = /\b(rspec|rake test|bundle exec rspec|npm test|pytest|go test)\b/
 
+# A transcript entry that reads as a human prompt — the same filter the turn
+# marker uses above (markup-led prompts are system noise, not asks), so the
+# usage slice boundaries match the turn boundaries.
+def human_prompt?(entry)
+  return false unless entry["type"] == "user"
+  return false if entry["isMeta"] || entry["isSidechain"]
+
+  content = entry.dig("message", "content")
+  text = content.is_a?(String) ? content : Array(content).filter_map { |b| b["text"] if b.is_a?(Hash) && b["type"] == "text" }.join
+  !text.strip.empty? && !text.lstrip.start_with?("<", "[")
+end
+
+# Report the current turn's token TOTALS: sum assistant usage since the last
+# human prompt in the transcript. Totals + a last-word-wins fold means this
+# stateless hook can re-report at any frequency without double-counting —
+# today it fires once per turn (Stop); moving it to PostToolUse for live
+# ticking is a frequency change, not a design change.
+def report_usage(path)
+  return unless path && File.readable?(path)
+
+  slice = []
+  File.foreach(path) do |line|
+    entry = JSON.parse(line) rescue next
+    if human_prompt?(entry)
+      slice = [] # a new turn's slice begins
+    elsif entry["type"] == "assistant" && !entry["isSidechain"] && (usage = entry.dig("message", "usage"))
+      slice << usage
+    end
+  end
+  return if slice.empty?
+
+  totals = Hash.new(0)
+  slice.each do |usage|
+    totals[:in] += usage["input_tokens"].to_i
+    totals[:out] += usage["output_tokens"].to_i
+    totals[:cache_read] += usage["cache_read_input_tokens"].to_i
+    totals[:cache_create] += usage["cache_creation_input_tokens"].to_i
+  end
+  bridge("usage #{totals.map { |key, count| "#{key}=#{count}" }.join(' ')}")
+end
+
 payload = JSON.parse($stdin.read) rescue {}
 event = payload["hook_event_name"]
 tool = payload["tool_name"]
@@ -86,4 +127,7 @@ when "Stop", "SubagentStop"
   # first dogfood session). `done`/eof belongs to one-shot streams (hcol produce);
   # a standing dogfood log just marks the phase and stays open.
   bridge("phase reviewing")
+  # Turn totals land as the turn closes. SubagentStop is skipped: a subagent's
+  # transcript would double-count into the same turn.
+  report_usage(payload["transcript_path"]) if event == "Stop"
 end

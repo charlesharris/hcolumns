@@ -70,6 +70,10 @@ module HColumns
         return
       end
 
+      # A log that speaks again isn't done — an accreting log (the agent bridge's)
+      # carries stale eof markers from sessions past, and staying "complete" on one
+      # would deafen every live view to what follows. Latest word wins, like :phase.
+      @done = false
       @log.append(kind: parsed[:kind], at: parsed[:at], payload: parsed[:payload])
       @log.fold([@log.events.last], into: into)
     end

@@ -93,6 +93,44 @@ RSpec.describe "turn grouping" do
       expect(section.items.first.target_id).to eq(file_a.id) # descendable
     end
 
+    it "folds usage into the open turn, last word wins (running totals, not deltas)" do
+      graph.record_turn(label: "ask", at: now)
+      graph.record_usage(tokens: { in: 100, out: 5 }, at: now)
+      graph.record_usage(tokens: { in: 4200, out: 320, cache_read: 39_000 }, at: now + 30)
+
+      expect(graph.turns.last[:tokens]).to eq({ in: 4200, out: 320, cache_read: 39_000 })
+    end
+
+    it "drops usage with no turn open (nothing to attribute it to)" do
+      expect { graph.record_usage(tokens: { in: 1, out: 1 }, at: now) }.not_to raise_error
+      expect(graph.turns).to be_empty
+    end
+
+    it "shows a turn's tokens in its heading and session totals up top" do
+      graph.record_turn(label: "first ask", at: now)
+      graph.observe(obs(change, file_a))
+      graph.record_usage(tokens: { in: 1000, out: 200, cache_read: 41_000 }, at: now)
+      graph.record_turn(label: "second ask", at: now + 60)
+      graph.record_usage(tokens: { in: 500, out: 100 }, at: now + 90)
+
+      sections = mode.panel(session, workspace, now: now).sections
+      expect(sections.first.heading).to eq("TOKENS")
+      expect(sections.first.lines.first).to eq("42.5k in → 300 out across 2 turns")
+      expect(sections[1].heading).to eq("TURN 2 — second ask (0 nodes · 500→100)")
+      expect(sections[2].heading).to eq("TURN 1 — first ask (1 node · 42k→200)")
+    end
+
+    it "renders newest turn first — the live turn grows at the top, not below the fold" do
+      graph.record_turn(label: "first ask", at: now)
+      graph.observe(obs(change, file_a))
+      graph.record_turn(label: "second ask", at: now + 60)
+      graph.observe(obs(change, file_b))
+
+      headings = mode.panel(session, workspace, now: now).sections.map(&:heading)
+      expect(headings.first).to start_with("TURN 2 — second ask")
+      expect(headings.last).to start_with("TURN 1 — first ask")
+    end
+
     it "is ranked by the resolver as a Session tab" do
       expect(HColumns::ModeResolver.new.modes_for(session).map(&:name)).to include(:turns)
     end

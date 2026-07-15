@@ -51,6 +51,8 @@ module HColumns
         when "--port" then opts[:port] = @argv.shift&.to_i
         when "--log" then opts[:log] = @argv.shift
         when "--session" then opts[:session] = @argv.shift
+        when "--mode" then opts[:mode] = @argv.shift
+        when /\A--mode=(.+)/ then opts[:mode] = Regexp.last_match(1)
         when /\A--log=(.+)/ then opts[:log] = Regexp.last_match(1)
         when /\A--session=(.+)/ then opts[:session] = Regexp.last_match(1)
         when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
@@ -94,9 +96,23 @@ module HColumns
     # Interactive Miller-column cascade. A real dir is indexed lazily; otherwise
     # defaults to the demo repo root.
     def walk(arg)
+      # `session` means YOUR session when the bridge's log is here — rooted at
+      # the live Session node, with the whole project one descend away through
+      # its IN_PROJECT edge. The frozen demo keeps the name only when there is
+      # nothing real to show (or ask for it by name: `hcol walk demo --live`).
+      return walk_project(Dir.pwd, root: :session) if arg == "session" && File.exist?(bridge_log(Dir.pwd))
+
+      arg = demo_name(arg)
       return walk_live_session if arg == "session" && @opts[:live]
       return walk_live_sessions if arg == "sessions" && @opts[:live]
       return walk_live_file(File.expand_path(arg)) if @opts[:live] && log_path?(arg)
+
+      if @opts[:live] && (dir = plain_dir(arg))
+        log = bridge_log(dir)
+        return no_bridge_log(log) unless File.exist?(log)
+
+        return walk_project(dir)
+      end
 
       workspace, node_id = target_for(arg, fixture_default: "repo/")
       unless node_id
@@ -136,6 +152,7 @@ module HColumns
     # the columns grow as lines land. They meet only at the file (single-writer
     # preserved; no shared memory, no threads).
     def produce(selector, path)
+      selector = demo_name(selector)
       unless %w[session sessions].include?(selector) && path
         warn "usage: hcol produce <session|sessions> <path.jsonl>"
         return 1
@@ -183,6 +200,21 @@ module HColumns
 
     # Follow an append-only log a producer is writing: tail it into a projection
     # and walk the growing cascade. The web analogue is live_web_file_app.
+    # The TUI over the same composed graph `serve` offers: the directory's pull
+    # strata plus the bridge log's session, one cascade. Single-threaded, so the
+    # one workspace is fine (no AppSource needed here).
+    def walk_project(dir, root: :dir)
+      workspace, start, feed, session = composed_target(dir, root: root)
+      cascade = Cascade.new(workspace, start, now: now, feed: feed,
+                            floor: @opts[:floor].to_f, session: session)
+      TUI.new(cascade).run
+      0
+    rescue TUI::NoTTY => e
+      warn e.message
+      warn "(the live walk needs an interactive terminal)"
+      1
+    end
+
     def walk_live_file(path)
       reader = TailReader.new(path)
       graph = Graph.new
@@ -285,7 +317,7 @@ module HColumns
         warn "no node matching #{arg.inspect}"
         return 1
       end
-      puts JSON.pretty_generate(app.panel(node_id))
+      puts JSON.pretty_generate(app.panel(node_id, mode: @opts[:mode]))
       0
     end
 
@@ -297,7 +329,7 @@ module HColumns
         warn "usage: hcol save <session|sessions> <path.jsonl>"
         return 1
       end
-      log = persistable_log(selector)
+      log = persistable_log(demo_name(selector))
       unless log
         warn "don't know how to snapshot #{selector.inspect} (try: session | sessions)"
         return 1
@@ -328,22 +360,49 @@ module HColumns
     # sessions demo the column grows in the browser as the agent works (the web
     # analogue of `walk session --live`). The second front-end.
     def serve(arg)
-      server =
-        if @opts[:live] && log_path?(arg)
-          tail_server(File.expand_path(arg)) || (return no_events(arg))
-        else
-          app =
-            if @opts[:live] && %w[session sessions].include?(arg)
-              live_web_app(arg)
-            else
-              static, node_id = web_app_for(arg, fixture_default: "repo/")
-              return missing(arg) unless node_id
+      if @opts[:live] && log_path?(arg)
+        path = File.expand_path(arg)
+        server = tail_server(path) || (return no_events(arg))
+        return run_server(server, "tailing #{display_path(path)} (live)")
+      end
 
-              static
-            end
-          Web::Server.new(app, port: @opts[:port] || 4567)
+      if (dir = plain_dir(arg))
+        # A real directory serves ONE composed graph: every pull stratum the
+        # dir offers (fs/git/beads/ruby/flags), and when the agent bridge's
+        # log is there, its session folds in live too — mounted under the
+        # root at serve time (BridgeMount), streamed over SSE.
+        log = bridge_log(dir)
+        if File.exist?(log)
+          return run_server(project_server(dir),
+                            "serving #{display_path(dir)} (live: tailing #{display_path(log)})")
         end
-      banner = server.live? ? "serving (live)" : "serving"
+        return no_bridge_log(log) if @opts[:live]
+      end
+
+      # `session` roots the same composed graph at the live Session node when
+      # the bridge's log is here (its IN_PROJECT edge walks back out to the
+      # files/git/beads strata); the frozen demo keeps the name only when
+      # there's nothing real to show — or ask for it: `hcol serve demo --live`.
+      if arg == "session" && File.exist?(bridge_log(Dir.pwd))
+        return run_server(project_server(Dir.pwd, root: :session),
+                          "serving the live session (tailing #{display_path(bridge_log(Dir.pwd))})")
+      end
+
+      arg = demo_name(arg)
+      app =
+        if @opts[:live] && %w[session sessions].include?(arg)
+          live_web_app(arg)
+        else
+          static, node_id = web_app_for(arg, fixture_default: "repo/")
+          return missing(arg) unless node_id
+
+          static
+        end
+      server = Web::Server.new(app, port: @opts[:port] || 4567)
+      run_server(server, server.live? ? "serving (live)" : "serving")
+    end
+
+    def run_server(server, banner)
       server.start { |s| warn "hcolumns #{banner} on http://#{s.host}:#{s.port}  (Ctrl-C to stop)" }
       0
     rescue Interrupt
@@ -351,8 +410,78 @@ module HColumns
       0
     end
 
+    # The one-server composition: ONE shared App behind a lock (AppSource::Locked).
+    # Share-nothing can't serve this graph — the pull strata (fs/git/beads) expand
+    # lazily into it, and a node id minted by one request's descent is an identity
+    # digest a fresh graph can't resolve; the expansion must accrete somewhere all
+    # connections can see. The push stratum (the bridge log's tail) folds into the
+    # same graph, mounted under the root by BridgeMount.
+    def project_server(dir, root: :dir)
+      workspace, start, feed, session = composed_target(dir, root: root)
+      app = Web::App.new(workspace: workspace, root_id: start, now: now,
+                         session: session, feed: feed)
+      Web::Server.new(apps: Web::AppSource::Locked.new(app), streaming: true,
+                      port: @opts[:port] || 4567)
+    end
+
     def missing(arg)
       warn "no node matching #{arg.inspect}"
+      1
+    end
+
+    # `demo`/`demos` are the explicit names for the frozen demo selectors, so
+    # the demo stays reachable now that a real project claims `session`.
+    def demo_name(arg)
+      { "demo" => "session", "demos" => "sessions" }[arg] || arg
+    end
+
+    # A real-directory selector. The literal `session`/`sessions` selectors keep
+    # their demo meaning; a bare `hcol serve`/`hcol walk` keeps the demo default
+    # unless --live says "my project, here" (then it means the cwd).
+    def plain_dir(arg)
+      return nil if %w[session sessions].include?(arg)
+      return (@opts[:live] ? Dir.pwd : nil) if arg.nil?
+
+      path = File.expand_path(arg)
+      File.directory?(path) ? path : nil
+    end
+
+    # Where the agent bridge's hook writes its accreting log for a directory.
+    # The hook writes at the project root, so serving a subdirectory looks
+    # upward to the repo root when the dir itself has no log.
+    def bridge_log(dir)
+      local = File.join(dir, ".hcolumns", "live.jsonl")
+      return local if File.exist?(local)
+
+      repo = Providers::Git.repo_root(dir)
+      repo ? File.join(repo, ".hcolumns", "live.jsonl") : local
+    end
+
+    # The composed project pieces: [workspace, start_id, feed, session_context].
+    # One graph holding every stratum; `root:` picks where the walk begins —
+    # :dir (the directory) or :session (the bridge log's live session; falls
+    # back to the directory until a session has landed).
+    def composed_target(dir, root: :dir)
+      workspace, dir_id = directory_target(dir)
+      feed = BridgeMount.new(TailReader.new(bridge_log(dir)), root_id: dir_id, now: now)
+      feed.release(into: workspace.graph) # catch up before the first answer
+      session = feed.session_id && session_context_for(workspace.graph, feed.session_id)
+      start = (root == :session && feed.session_id) || dir_id
+      [workspace, start, feed, session]
+    end
+
+    # A path shortened for banners: relative to the cwd when it lives under it.
+    def display_path(path)
+      return "." if path == Dir.pwd
+
+      pwd = "#{Dir.pwd}/"
+      path.start_with?(pwd) ? path.delete_prefix(pwd) : path
+    end
+
+    def no_bridge_log(log)
+      warn "no bridge log at #{log}"
+      warn "(the agent hook appends it as the agent works — see .claude/hooks/agent_bridge_hook.rb —"
+      warn " or write one by hand: hcol bridge --log #{log} \"turn hello\" \"log first event\")"
       1
     end
 
@@ -408,6 +537,11 @@ module HColumns
     end
 
     def target_for(arg, fixture_default:)
+      if (live = live_target_for(arg))
+        return live
+      end
+
+      arg = demo_name(arg)
       return [sessions_workspace, Providers::AgentSession.index_id] if arg == "sessions"
       return [session_workspace, Providers::AgentSession.session_id] if arg == "session"
 
@@ -417,24 +551,78 @@ module HColumns
         workspace = Workspace.new(graph: log.project, lens: lens)
         [workspace, Persistence.root_id(log)]
       elsif path && File.exist?(path)
-        providers = [Providers::Filesystem.new, Providers::NamingRules.new]
-        repo = Providers::Git.repo_root(path)
-        providers << Providers::Git.new(repo) if repo
-        beads_root = Providers::Beads.available? && Providers::Beads.root_for(path)
-        providers << Providers::Beads.new(beads_root) if beads_root
-        root = repo || (File.directory?(path) ? path : File.dirname(path))
-        providers << Providers::RubyCode.new(root)
-        # A real walk is log-backed (providers record as they expand) and carries
-        # the accreting flag store: prior sessions' judgments replay in, and new
-        # flags append as they happen.
-        workspace = Workspace.new(graph: Graph.new(log: EventLog.new), providers: providers,
-                                  lens: lens, flag_store: flag_store_for(root))
-        node = workspace.add_node(Providers::Filesystem.node_for(path))
-        workspace.replay_flags
-        [workspace, node.id]
+        workspace, node_id = directory_target(path)
+        # One-shot reads see the composed graph too: the session stratum folds
+        # in beside the pull strata (a file's TOUCHED_BY, the change-set's
+        # VERIFIED_BY). Only a directory gets the seam edges — hanging
+        # HAS_SESSION under a queried file would be noise.
+        fold_bridge_log(workspace, path, seam_root_id: File.directory?(path) ? node_id : nil)
+        [workspace, node_id]
       else
         [fixture_workspace, resolve_in_fixture(arg || fixture_default)]
       end
+    end
+
+    # One-shot selectors into the REAL project, when the bridge's log is here:
+    # `session` roots at the live session; an `obj:` id resolves into the
+    # composed graph. Log-borne ids replay deterministically (same identity =>
+    # same id in every process), so an obj: id printed by one invocation's JSON
+    # is addressable by the next; file nodes only exist once their parent has
+    # expanded — address files by path instead.
+    def live_target_for(arg)
+      return nil unless arg == "session" || arg&.start_with?("obj:")
+      return nil unless File.exist?(bridge_log(Dir.pwd))
+
+      workspace, start, feed, = composed_target(Dir.pwd, root: :session)
+      if arg == "session"
+        feed.session_id ? [workspace, start] : nil
+      elsif (found = resolve_shallow(workspace, arg))
+        [workspace, found]
+      end
+    end
+
+    # An obj: id beyond the log replay lives in the pull strata and only exists
+    # once its parent expands. Expand the root, then its first ring (the beads
+    # index -> its beads, branches -> commits), before giving up — deep file
+    # nodes are addressed by path instead, so two rings cover the real asks.
+    def resolve_shallow(workspace, id)
+      return id if workspace.node(id)
+
+      root_id = Providers::Filesystem.node_for(Dir.pwd).id
+      workspace.expand(root_id, now: now)
+      return id if workspace.node(id)
+
+      workspace.graph.edges_from(root_id).map(&:target_id).each { |nid| workspace.expand(nid, now: now) }
+      workspace.node(id) ? id : nil
+    end
+
+    def fold_bridge_log(workspace, path, seam_root_id: nil)
+      dir = File.directory?(path) ? path : File.dirname(path)
+      log = bridge_log(dir)
+      return unless File.exist?(log)
+
+      reader = TailReader.new(log)
+      feed = seam_root_id ? BridgeMount.new(reader, root_id: seam_root_id, now: now) : reader
+      feed.release(into: workspace.graph)
+    end
+
+    # [Workspace, root_id] over a real path: every pull stratum the path offers.
+    def directory_target(path)
+      providers = [Providers::Filesystem.new, Providers::NamingRules.new]
+      repo = Providers::Git.repo_root(path)
+      providers << Providers::Git.new(repo) if repo
+      beads_root = Providers::Beads.available? && Providers::Beads.root_for(path)
+      providers << Providers::Beads.new(beads_root) if beads_root
+      root = repo || (File.directory?(path) ? path : File.dirname(path))
+      providers << Providers::RubyCode.new(root)
+      # A real walk is log-backed (providers record as they expand) and carries
+      # the accreting flag store: prior sessions' judgments replay in, and new
+      # flags append as they happen.
+      workspace = Workspace.new(graph: Graph.new(log: EventLog.new), providers: providers,
+                                lens: lens, flag_store: flag_store_for(root))
+      node = workspace.add_node(Providers::Filesystem.node_for(path))
+      workspace.replay_flags
+      [workspace, node.id]
     end
 
     # The flag store for a walked root — where this repo's judgments accrete.
@@ -502,13 +690,19 @@ module HColumns
           hcol flag <path> <up|down|exclude|clear>
                                      flag a file/dir without the TUI; persists to
                                      .hcolumns/flags.jsonl and replays on every walk
-          hcol walk sessions         walk the list of agent sessions, descend into any
-          hcol walk sessions --live  …with the newest session streaming as it works
-          hcol explore session       the agent-session route (Task→change→files→test→log)
-          hcol walk session          walk that route interactively
-          hcol walk session --live   watch one session's column grow as the agent "works"
+          hcol serve session         YOUR live session as the root (needs .hcolumns/live.jsonl):
+                                     descend IN_PROJECT to reach the files/git/beads strata
+          hcol walk session          …same, in the terminal
+          hcol walk demos --live     the frozen DEMO: the sessions list, newest streaming as it "works"
+          hcol explore demo          the demo route (Task→change→files→test→log)
+          hcol walk demo --live      watch the demo session's column grow
+                                     (`session`/`sessions` still mean the demo where no bridge log exists)
           hcol inspect [node|path]   everything about a node: data, provenance, confidence math
           hcol json [node|path]      the node's panel + ranked modes as JSON (the web data contract)
+                                     --mode M picks a tab (turns, diff, details, blame, …); with a
+                                     bridge log here, `session` and obj: ids resolve into the REAL
+                                     composed graph (log-borne ids are stable across invocations;
+                                     address files by path) — the agent-readable surface
           hcol save <session|sessions> <file.jsonl>
                                      snapshot a session's event log to disk (the mound persists)
           hcol explore|walk|serve <file.jsonl>
@@ -518,13 +712,21 @@ module HColumns
           hcol bridge --log <file.jsonl> [--session KEY] [<command>]
                                      real agent bridge: append events for what an agent did, in a
                                      neutral vocab (turn <label> · edit <path> · phase <name> ·
-                                     test start|ok|fail <cmd> · log <text> · done) — one per arg or
+                                     test start|ok|fail <cmd> · usage in=N out=N … ·
+                                     log <text> · done) — one per arg or
                                      stdin line. A thin hook feeds it (.claude/hooks/); watch with
                                      walk/serve --live; the session's `turns` tab groups work per turn
-          hcol walk <file.jsonl> --live    tail a producer's log; the cascade grows as events land
-          hcol serve <file.jsonl> --live   …same, in a browser, pushed over SSE (run `produce` alongside)
+          hcol serve <dir>           ONE server over the project's composed graph: files, git,
+                                     beads, ruby — and when the agent bridge's log is there
+                                     (.hcolumns/live.jsonl), its session too, streamed over SSE:
+                                     a HAS_SESSION section on the root; descend for turns,
+                                     the change-set, its files and TestRuns
+          hcol serve --live          …same for the cwd (bare `hcol serve` keeps the demo)
+          hcol walk [dir] --live     …same composed graph, in the terminal
+          hcol walk <file.jsonl> --live    tail any producer's log; the cascade grows as events land
+          hcol serve <file.jsonl> --live   …same, in a browser (run `produce` alongside)
           hcol serve [node|path]     serve the columns over HTTP; walk them in a browser (--port N)
-          hcol serve session --live  …with the session streaming: columns grow in the browser as it works
+          hcol serve demo --live     …with the demo session streaming: columns grow as it "works"
           hcol nodes                 list nodes in the demo graph
           hcol help                  this help
 

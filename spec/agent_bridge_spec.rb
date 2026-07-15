@@ -79,6 +79,22 @@ RSpec.describe HColumns::AgentBridge do
                 .count { |e| e.type == :TOUCHES }).to eq(3)
   end
 
+  it "adopts a named spine from the log, so later processes' edges reference it" do
+    bridge.apply("session dogfood Dogfooding the bridge") # process 1 names the session
+    bridge(session: "live").apply("edit lib/foo.rb")      # process 2 wakes with the default key
+    bridge(session: "live").apply("phase testing")        # process 3 re-emits the Session node
+
+    g = graph
+    sessions = g.nodes.select { |n| n.type == :Session }
+    expect(sessions.map { |n| n.identity[:key] }).to eq(["dogfood"]) # no ghost "live" twin
+    expect(sessions.first.properties[:name]).to eq("Task: Dogfooding the bridge") # title survives re-emit
+    expect(sessions.first.properties[:phase]).to eq(:testing)
+    change = g.nodes.find { |n| n.type == :ProposedChange }
+    expect(change.identity[:key]).to eq("dogfood:c1")
+    touches = g.edges_from(change.id).find { |e| e.type == :TOUCHES }
+    expect(touches).not_to be_nil # the edit hangs off the spine on disk, not a never-emitted node
+  end
+
   it "`session` names the spine and `done` closes the stream" do
     b = bridge(session: "live")
     b.apply("session feature-x Add the widget")
@@ -104,6 +120,20 @@ RSpec.describe HColumns::AgentBridge do
     # the header spine (written before the first marker) stays unattributed
     driven = g.edges_from(g.nodes.find { |n| n.type == :Session }.id).find { |e| e.type == :DRIVEN_BY }
     expect(driven.observations.first.turn).to be_nil
+  end
+
+  it "attaches `usage` totals to the open turn across processes, last word wins" do
+    bridge.apply("turn first ask")                       # process 1
+    bridge.apply("usage in=100 out=5")                   # process 2 (mid-turn tick)
+    bridge.apply("usage in=4200 out=320 cache_read=39000") # process 3 (turn end totals)
+    expect(graph.turns.last[:tokens]).to eq({ in: 4200, out: 320, cache_read: 39_000 })
+  end
+
+  it "ignores a `usage` line with nothing parseable (a noisy hook never crashes)" do
+    b = bridge
+    b.apply("turn ask")
+    b.apply("usage lots of tokens probably")
+    expect(graph.turns.last[:tokens]).to be_nil
   end
 
   describe "test lifecycle (start → ok/fail re-emits the same node)" do

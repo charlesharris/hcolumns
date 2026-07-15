@@ -8,8 +8,8 @@ module HColumns
     # so a walk stays in "planning headspace". TOUCHED_BY is lifted highest so that
     # standing on a source file, the beads that touch it surface first. The agent's
     # metadata word is trusted a little more than a path scraped from prose.
-    class PlannerLens < Lens
-      def self.default_name = :planner
+    class BeadsLens < Lens
+      def self.default_name = :beads
 
       def self.default_tuner
         Tuner.new({ recency: 0.4 }, evidence_mix: { agent: 1.2, inference: 0.7 })
@@ -28,6 +28,6 @@ module HColumns
       end
     end
 
-    Lens.register(PlannerLens)
+    Lens.register(BeadsLens)
   end
 end

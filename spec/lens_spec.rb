@@ -26,22 +26,23 @@ RSpec.describe HColumns::Lens do
 
   describe "cycle" do
     it "walks the registered ring in order and wraps around" do
-      expect(described_class.names).to eq(%i[default reviewer explorer git filesystem planner])
+      expect(described_class.names).to eq(%i[default reviewer explorer git filesystem beads session])
       expect(described_class.cycle(:default).name).to eq(:reviewer)
       expect(described_class.cycle(:explorer).name).to eq(:git)
-      expect(described_class.cycle(:filesystem).name).to eq(:planner)
-      expect(described_class.cycle(:planner).name).to eq(:default)
+      expect(described_class.cycle(:filesystem).name).to eq(:beads)
+      expect(described_class.cycle(:beads).name).to eq(:session)
+      expect(described_class.cycle(:session).name).to eq(:default)
     end
 
     it "preset returns the right subclass for each registered name" do
       expect(described_class.preset(:git)).to be_a(HColumns::Lenses::GitLens)
       expect(described_class.preset(:reviewer)).to be_a(HColumns::Lenses::ReviewerLens)
-      expect(described_class.preset(:planner)).to be_a(HColumns::Lenses::PlannerLens)
+      expect(described_class.preset(:beads)).to be_a(HColumns::Lenses::BeadsLens)
       expect(described_class.preset(:default)).to be_an_instance_of(described_class)
     end
 
-    it "planner lifts the plan families and dims code/filesystem noise" do
-      weights = described_class.preset(:planner).relation_weights
+    it "beads lifts the plan families and dims code/filesystem noise" do
+      weights = described_class.preset(:beads).relation_weights
       expect(weights.fetch(:TOUCHED_BY)).to be > weights.fetch(:CONTAINS)
       expect(weights.fetch(:BLOCKS)).to be > 1.0
       expect(weights.fetch(:REFERENCES)).to be < 1.0

@@ -1,6 +1,6 @@
   repo/  ›  src    [mode: default]
 
-[default] git details  │ [default] git details  │ preview               
+[default] filesystem … │ [default] filesystem … │ preview               
 ⊃ CONTAINS             │ ⊃ CONTAINS             │ → NODE                
   ● README.md          │ ▸ ● inventory.rb       │ NODE  src/inventory.rb
   ● spec               │   ● orders.rb          │   type        SourceF…
