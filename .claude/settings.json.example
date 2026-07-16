@@ -1,10 +1,13 @@
 {
-  "_comment": "hc-gzj: enable the live agent bridge. Copy to .claude/settings.json to opt in. Then, in the repo, run `hcol serve .hcolumns/live.jsonl --live` (or `walk`) and watch this session grow as you work — turns partition it (UserPromptSubmit), test runs flip ◐ → ✓/✗ live (PreToolUse/PostToolUse). Override the log path with HCOL_BRIDGE_LOG.",
+  "_comment": "hc-gzj: enable the live agent bridge for hcolumns ITSELF. Copy to .claude/settings.json to opt in, then run `hcol serve .` and watch this session grow as you work. Note the dogfood wiring: HCOL_BIN is the working tree (exe/hcol), and the hook is the shipped TEMPLATE run in place (lib/hcolumns/templates/) so fixes made here are what other repos get. OTHER repos should not copy this file — run `hcol init` there instead. Override the log path with HCOL_BRIDGE_LOG.",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+          {
+            "type": "command",
+            "command": "HCOL_BIN=\"$CLAUDE_PROJECT_DIR/exe/hcol\" ruby \"$CLAUDE_PROJECT_DIR/lib/hcolumns/templates/agent_bridge_hook.rb\""
+          }
         ]
       }
     ],
@@ -12,7 +15,10 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+          {
+            "type": "command",
+            "command": "HCOL_BIN=\"$CLAUDE_PROJECT_DIR/exe/hcol\" ruby \"$CLAUDE_PROJECT_DIR/lib/hcolumns/templates/agent_bridge_hook.rb\""
+          }
         ]
       }
     ],
@@ -20,14 +26,20 @@
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
-          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+          {
+            "type": "command",
+            "command": "HCOL_BIN=\"$CLAUDE_PROJECT_DIR/exe/hcol\" ruby \"$CLAUDE_PROJECT_DIR/lib/hcolumns/templates/agent_bridge_hook.rb\""
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "ruby \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_bridge_hook.rb\"" }
+          {
+            "type": "command",
+            "command": "HCOL_BIN=\"$CLAUDE_PROJECT_DIR/exe/hcol\" ruby \"$CLAUDE_PROJECT_DIR/lib/hcolumns/templates/agent_bridge_hook.rb\""
+          }
         ]
       }
     ]

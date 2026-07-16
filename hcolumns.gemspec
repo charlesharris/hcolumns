@@ -17,8 +17,10 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.0"
 
   # Prose only: the README's screenshots live under docs/images/ and have no
-  # business in the installed gem.
-  spec.files = Dir["lib/**/*.rb", "exe/*", "docs/**/*.md", "README.md"]
+  # business in the installed gem. The templates/ glob is load-bearing — `hcol
+  # init` copies those files into other repos, so a gem that ships lib/**/*.rb
+  # alone would install an `init` with nothing to write (SKILL.md is not .rb).
+  spec.files = Dir["lib/**/*.rb", "lib/hcolumns/templates/*", "exe/*", "docs/**/*.md", "README.md"].uniq
   spec.bindir = "exe"
   spec.executables = ["hcol"]
   spec.require_paths = ["lib"]

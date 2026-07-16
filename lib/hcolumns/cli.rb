@@ -25,6 +25,7 @@ module HColumns
       when "flag" then flag_path(@argv[0], @argv[1])
       when "produce" then produce(@argv[0], @argv[1])
       when "bridge" then bridge
+      when "init" then init(@argv.first)
       when "serve" then serve(@argv.first)
       when "search" then search(@argv.first)
       when "nodes" then list_nodes
@@ -187,6 +188,41 @@ module HColumns
         agent.apply(@argv.join(" "))
       end
       0
+    end
+
+    # `hcol init [dir]` — install the bridge hook + skill into any repo (hc-ouk),
+    # so the live-session stratum is a feature of the gem, not of this repo.
+    def init(dir)
+      root = File.expand_path(dir || ".")
+      unless File.directory?(root)
+        warn "usage: hcol init [dir]   (dir must exist; default: .)"
+        return 1
+      end
+
+      results = Initializer.new(root).run
+      report_init(root, results)
+      0
+    rescue Initializer::Error => e
+      warn "hcol init: #{e.message}"
+      1
+    end
+
+    GLYPHS = { written: "✓", updated: "✓", merged: "✓", unchanged: "=" }.freeze
+
+    def report_init(root, results)
+      puts "hcolumns → #{root}"
+      results.each do |r|
+        path = r.path.sub("#{root}/", "")
+        line = "  #{GLYPHS[r.status]} #{path.ljust(38)} #{r.status}"
+        line += " (#{r.note})" if r.note
+        puts line
+      end
+      puts <<~TXT
+
+        Start a session in this repo, then watch it:
+          hcol serve .            the composed graph — files, git, and your session
+          hcol walk . --live      …in the terminal
+      TXT
     end
 
     # A timed [{ after:, kind:, payload: }] script for the producer. The session is
@@ -520,7 +556,7 @@ module HColumns
 
     def no_bridge_log(log)
       warn "no bridge log at #{log}"
-      warn "(the agent hook appends it as the agent works — see .claude/hooks/agent_bridge_hook.rb —"
+      warn "(`hcol init` wires the agent hook into this repo, and it appends as the agent works —"
       warn " or write one by hand: hcol bridge --log #{log} \"turn hello\" \"log first event\")"
       1
     end
@@ -749,6 +785,12 @@ module HColumns
       puts <<~TXT
         hcol — harris columns
 
+          hcol init [dir]            wire the agent bridge into a repo: writes the hook +
+                                     the `hcol` agent skill into .claude/ and merges the
+                                     hook events into .claude/settings.json (keeping any
+                                     hooks already there). Idempotent; re-run after a gem
+                                     upgrade to refresh. Then `hcol serve .` shows that
+                                     repo's sessions live
           hcol explore [node|path]   print the ranked column for a node or a real file/dir
                                      (default: src/orders.rb in the demo graph)
           hcol walk [dir|path]       interactively walk the cascade (arrows/hjkl;

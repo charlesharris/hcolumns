@@ -7,14 +7,20 @@
 # agent-agnostic — swap this file to bridge a different agent (a git hook, an
 # editor, a CI job) without touching the library.
 #
-# Wire it up in .claude/settings.json (see the sibling settings.json in this dir):
-# PostToolUse (Edit|Write|MultiEdit|Bash) and Stop both run this script. Then, in
-# the repo, watch a session grow live:
+# This file is the TEMPLATE `hcol init` copies into a repo's .claude/hooks/ —
+# and it is also the hook hcolumns itself runs (settings.json points straight
+# here, no copy), so a fix made while dogfooding is the fix other repos get.
+# Nothing below may assume it is running inside the hcolumns tree.
+#
+# `hcol init` writes the .claude/settings.json wiring: UserPromptSubmit, PreToolUse
+# (Bash), PostToolUse (Edit|Write|MultiEdit|Bash) and Stop all run this script.
+# Then, in the repo, watch a session grow live:
 #
 #     hcol serve $HCOL_BRIDGE_LOG --live     # browser
 #     hcol walk  $HCOL_BRIDGE_LOG --live     # terminal
 #
-# The log path comes from $HCOL_BRIDGE_LOG (default .hcolumns/live.jsonl).
+# The log path comes from $HCOL_BRIDGE_LOG (default .hcolumns/live.jsonl); the
+# binary from $HCOL_BIN (default `hcol`, the installed gem).
 
 require "json"
 

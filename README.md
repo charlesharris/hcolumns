@@ -140,11 +140,20 @@ append-only JSONL log, and the columns **grow as the agent works** — turns
 partition the session, test runs flip `◐ → ✓/✗` live, and the auto mode follows
 the agent's phase (editing → testing → reviewing).
 
+In **any** repo, `hcol init` installs the bridge — the hook, the `hcol` agent
+skill, and the `.claude/settings.json` wiring (merged into whatever hooks are
+already there, so it's safe to run on a repo you've already set up):
+
 ```sh
-cp .claude/settings.json.example .claude/settings.json   # opt in
-hcol serve --live        # the cwd's composed graph + the live session, over SSE
+cd ~/src/some-project
+hcol init                # writes .claude/hooks/, .claude/skills/hcol/, settings.json
+hcol serve .             # that repo's composed graph + its live session, over SSE
 hcol walk . --live       # …same, in the terminal
 ```
+
+It's idempotent — re-run it after a gem upgrade to refresh the hook (a hook
+you've customized is backed up first). In *this* repo the bridge is already
+wired, dogfood-style: `cp .claude/settings.json.example .claude/settings.json`.
 
 <p align="center">
   <img src="docs/images/web-session.png" alt="The session's turns tab: token totals across 26 turns, and the nodes produced by the current turn" width="100%">
@@ -206,8 +215,8 @@ obj:c1dea47feeeaf6c4  TestFile  sse_spec.rb  spec/web/sse_spec.rb
 
 Feed any printed id or path straight back to `hcol json`. The cap is **reported,
 never silent** — a capped search says so rather than reading as "searched
-everything". There's an [`hcol` skill](.claude/skills/hcol/SKILL.md) that teaches
-an agent this surface.
+everything". There's an [`hcol` skill](lib/hcolumns/templates/SKILL.md) that teaches
+an agent this surface — `hcol init` installs it into any repo.
 
 ## How it works
 

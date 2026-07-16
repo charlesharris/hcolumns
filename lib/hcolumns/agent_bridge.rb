@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+
 module HColumns
   # The real agent bridge (hc-gzj): a live coding agent's actions become
   # Persistence-format events on an append-only JSONL log — the producer the
@@ -230,7 +232,12 @@ module HColumns
       append(Persistence.line_for(kind: :observe, payload: obs))
     end
 
+    # The log's directory is made on demand: a fresh repo has no .hcolumns/, and
+    # the hook that feeds us swallows errors (a bridge hiccup must never fail the
+    # tool call it observes) — so without this, `hcol init` elsewhere would install
+    # cleanly and then record nothing, silently. Same posture as FlagStore.
     def append(line)
+      FileUtils.mkdir_p(File.dirname(@path))
       File.open(@path, "a") do |io|
         io.puts(line)
         io.flush

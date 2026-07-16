@@ -2,6 +2,19 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Working on hcolumns itself
+
+Use `./exe/hcol` (the working tree) when running this repo's own CLI; plain `hcol`
+is the *installed gem* and will not see your changes until `./install.sh` runs.
+This bites hardest with `hcol serve` — a serve started before an edit keeps
+running the old code.
+
+The `hcol` skill (`.claude/skills/hcol/SKILL.md`) and the bridge hook
+(`lib/hcolumns/templates/agent_bridge_hook.rb`) are the **templates `hcol init`
+ships to other repos** — this repo runs them directly (the skill is a symlink;
+settings.json points at the template path) so dogfood fixes are what other repos
+get. Keep them repo-agnostic: anything hcolumns-specific belongs here instead.
+
 ## Quick Reference
 
 ```bash

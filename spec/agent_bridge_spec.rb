@@ -31,6 +31,16 @@ RSpec.describe HColumns::AgentBridge do
     graph.edges_from(subject.id).find { |e| e.type == relation }
   end
 
+  # A fresh repo has no .hcolumns/, and the hook that feeds the bridge swallows
+  # errors by design — so a missing dir meant `hcol init` elsewhere installed
+  # cleanly and then recorded nothing, silently (found while driving hc-ouk).
+  it "creates the log's directory rather than failing into a swallowed error" do
+    nested = File.join(@dir, "fresh-repo", ".hcolumns", "live.jsonl")
+    described_class.new(path: nested, session: "s1", clock: -> { now }).apply("edit lib/foo.rb")
+
+    expect(File.file?(nested)).to be true
+  end
+
   it "writes the session spine as a header on the first command" do
     bridge.apply("edit lib/foo.rb")
     g = graph
