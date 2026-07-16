@@ -7,15 +7,14 @@ module HColumns
     # On-demand transcript provider (hc-33x) — the **context stratum**: what the
     # session's tokens actually WERE, and where they went.
     #
-    # The measurement that shapes this whole design: a real session billed 102.9M
+    # The measurement that shapes this whole design: a real session sent 102.9M
     # wire tokens against only 2.8MB (~700k tokens) of DISTINCT content on disk —
     # a ~100x re-read factor, because every turn re-sends the accreted mound
     # through the cache. So "show me all the actual tokens" is tractable: the
     # corpus is ~700k, not 102.9M. And the cost of a block is dominated by how
-    # long it SITS in context, not its size — one 14.5k-token file read, resident
-    # for 531 turns, cost 7.7M billed, while a block twice its size cost a
-    # sixth as much. Ranking by size tells the wrong story; we rank by
-    # size x residency.
+    # long it SITS in context, not its size — one 14.5k-token file read stayed
+    # resident for 531 turns and outcost a block twice its size by 6x. Ranking by
+    # size tells the wrong story; we rank by size x residency, cache-weighted.
     #
     # Format-awareness lives HERE, deliberately. hcolumns' core (the graph, the
     # log, the bridge vocabulary) stays agent-agnostic; a provider is exactly the
@@ -36,6 +35,17 @@ module HColumns
       # estimate is good to ~30% against billed totals, which is plenty to rank —
       # and it is reported as an estimate rather than dressed up as truth.
       BYTES_PER_TOKEN = 4
+
+      # Anthropic's cache multipliers, relative to base input price: a block is
+      # WRITTEN to the cache once (1.25x) and then RE-READ on every later turn at
+      # a tenth of base (0.1x). Measured across our own 12 sessions: 98% of wire
+      # volume is cache reads, so raw wire tokens overstate real cost by ~8x
+      # (685.4M wire → 82.6M cost-equivalent). Ranking is nearly unaffected — the
+      # 0.1x·residency term dominates — but the NUMBER has to be honest, or the
+      # view invites you to panic about a bill you never paid.
+      # https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+      CACHE_WRITE = 1.25
+      CACHE_READ = 0.1
 
       # The kinds of block worth being a node. `thinking` earns its place: it is
       # the largest category on disk (376KB of the 2.8MB) and takes 6 of the top
@@ -93,7 +103,10 @@ module HColumns
           total_turns = blocks.map { |b| b[:turn] }.max.to_i
           blocks.each do |block|
             block[:resident] = total_turns - block[:turn]
-            block[:cost] = block[:tokens] * block[:resident]
+            # Cost-EQUIVALENT (base-input-priced), not wire volume: written once,
+            # then re-read cheaply on every later turn.
+            block[:cost] = (block[:tokens] * (CACHE_WRITE + (CACHE_READ * block[:resident]))).round
+            block[:wire] = block[:tokens] * (block[:resident] + 1)
           end
 
           blocks.each { |block| add_block(graph, node, block, path, now: now) }
@@ -107,7 +120,7 @@ module HColumns
           # is the point: confidence reports how much we actually know.
           observe(graph, transcript, target, :CONSUMED, weight: 1.0, kind: :inference, at: now,
                   summary: "~#{approx(block[:tokens])} tok × #{block[:resident]} turns resident " \
-                           "≈ #{approx(block[:cost])} billed (estimated)")
+                           "≈ #{approx(block[:cost])} cost-equiv (estimated; cache-weighted)")
         end
 
         # The anchor (Charris's call): a Read's result is content that is ALREADY
@@ -128,7 +141,8 @@ module HColumns
             type: :ContextBlock,
             identity: { scheme: "transcript.block", key: "#{key}\x1f#{block[:line]}:#{block[:index]}" },
             properties: { name: block[:label], kind: block[:kind], tokens: block[:tokens],
-                          resident: block[:resident], cost: block[:cost], turn: block[:turn],
+                          resident: block[:resident], cost: block[:cost], wire: block[:wire],
+                          turn: block[:turn],
                           path: path, line: block[:line], block_index: block[:index],
                           file: block[:file] }
           )

@@ -50,20 +50,43 @@ RSpec.describe HColumns::Providers::Transcript do
          .map { |e| graph.node(e.target_id) }.sort_by { |n| -n.properties[:cost] }
   end
 
-  # The finding the whole design rests on: a small block that lands EARLY outcosts
-  # a large one that lands late, because every later turn re-sends it. Measured on
-  # a real session: 14.5k tokens read at turn 8 cost 7.7M billed.
-  it "ranks by size x residency, so an early small block outcosts a late large one" do
-    early = thinking("e" * 400)          # ~100 tok, resident for the rest
+  # The finding the whole design rests on: a small block that lands EARLY can
+  # outcost a much larger one that lands late, because every later turn re-sends
+  # it. Measured on a real session: 14.5k tokens read at turn 8 stayed resident
+  # 531 turns and outcost a block twice its size by 6x.
+  #
+  # But there is a CROSSOVER, and cache pricing sets it: a block is written once
+  # at 1.25x and re-read at only 0.1x, so residency has to overcome the write
+  # premium before it dominates size. At a 2.5x size gap the early block wins
+  # after ~19 turns; at 10x it takes ~113. Below that, the bigger block really is
+  # the more expensive one — which is why this fixture is deliberately over the
+  # line rather than under it.
+  it "ranks by size x residency, so a long-resident small block outcosts a late large one" do
+    early = thinking("e" * 1600)         # ~400 tok, resident for the rest
     late  = thinking("l" * 4000)         # ~1000 tok, resident for nothing
-    write_transcript(assistant(early), *Array.new(8) { assistant(thinking("x")) }, assistant(late))
+    write_transcript(assistant(early), *Array.new(30) { assistant(thinking("x")) }, assistant(late))
 
     graph, node = graph_with(@path)
     top = blocks_of(graph, node).first
+    last = blocks_of(graph, node).find { |b| b.properties[:turn] == 32 }
 
     expect(top.properties[:name]).to eq("thinking (turn 1)")
-    expect(top.properties[:resident]).to be > 0
-    expect(top.properties[:cost]).to be > blocks_of(graph, node).find { |b| b.properties[:turn] == 10 }.properties[:cost]
+    expect(top.properties[:tokens]).to be < last.properties[:tokens] # smaller…
+    expect(top.properties[:cost]).to be > last.properties[:cost]     # …yet dearer
+  end
+
+  # Wire volume is what crossed the network; cost-equivalent is what it was worth.
+  # Across our own 12 sessions 98% of wire was cache reads at 0.1x, so reporting
+  # wire as "billed" overstates the bill ~8x. Both numbers, or neither is honest.
+  it "separates wire volume from cache-weighted cost" do
+    write_transcript(assistant(thinking("x" * 4000)), *Array.new(9) { assistant(thinking("y")) })
+    graph, node = graph_with(@path)
+    block = blocks_of(graph, node).first
+    p = block.properties
+
+    expect(p[:wire]).to eq(p[:tokens] * (p[:resident] + 1))            # sent 10x
+    expect(p[:cost]).to eq((p[:tokens] * (1.25 + (0.1 * p[:resident]))).round) # worth ~2.2x
+    expect(p[:cost]).to be < p[:wire]
   end
 
   # A tool_result carries no input of its own — everything that makes it legible

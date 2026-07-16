@@ -37,7 +37,7 @@ module HColumns
         label: "#{prefix}#{p[:name]}",
         target_id: block.id,
         glyph: GLYPHS.fetch(p[:kind].to_s, "·"),
-        detail: ["#{abbrev(p[:tokens])} tok × #{p[:resident]} turns resident ≈ #{abbrev(p[:cost])} billed"]
+        detail: ["#{abbrev(p[:tokens])} tok × #{p[:resident]} turns resident ≈ #{abbrev(p[:cost])} cost-equiv"]
       )
     end
 
@@ -51,18 +51,22 @@ module HColumns
       count.to_s
     end
 
-    # The headline that reframes the number: what was billed, what the distinct
-    # material actually is, and the re-read factor between them. A session that
-    # billed 102.9M against 700k of content spent ~99% of its tokens re-reading
-    # the same mound — which is the real story the counts hide.
+    # The headline that reframes the number: the distinct material, the wire
+    # volume, the re-read factor between them, and — the honest one — what it
+    # actually COST. Measured across our 12 sessions: 98% of wire is cache reads
+    # at 0.1x, so 685.4M of wire was worth 82.6M. Reporting wire alone invites
+    # panic about a bill nobody paid; reporting cost alone hides the re-read
+    # story. Both, or neither is true.
     def summary_lines(blocks)
       distinct = blocks.sum { |b| b.properties[:tokens].to_i }
       modelled = blocks.sum { |b| b.properties[:cost].to_i }
-      factor = distinct.positive? ? (modelled.to_f / distinct).round : 0
-      ["#{abbrev(distinct)} distinct tokens in #{blocks.size} blocks · " \
-       "≈#{abbrev(modelled)} billed re-reading them (~#{factor}× re-read)",
+      wire = blocks.sum { |b| b.properties[:wire].to_i }
+      factor = distinct.positive? ? (wire.to_f / distinct).round : 0
+      ["#{abbrev(distinct)} distinct tokens in #{blocks.size} blocks · #{abbrev(wire)} wire " \
+       "(~#{factor}× re-read) · ≈#{abbrev(modelled)} cost-equivalent",
        "cost ≈ size × turns resident — an early block is re-sent every turn after it lands.",
-       "token counts are ESTIMATES (bytes/4, no tokenizer); ranking is what they're for.",
+       "cache-weighted: a re-read bills at 0.1×, so wire volume overstates cost ~8×.",
+       "ESTIMATES (bytes/4, no tokenizer); ranking is what they're for.",
        "top #{TOP} below; the `blocks` tab lists all #{blocks.size}."]
     end
   end
@@ -89,7 +93,7 @@ module HColumns
       # quietly shows 10 of 792 reads as "this is all of it". It rides the heading
       # because a section's lines render ABOVE its items — a "… 782 more" floating
       # over the list it caps reads as a header, not a footer.
-      heading = "TOP #{top.size} OF #{blocks.size} CONSUMERS (estimated billed)"
+      heading = "TOP #{top.size} OF #{blocks.size} CONSUMERS (estimated cost-equivalent)"
       Panel.new(node: node, mode: name, sections: [
                   PanelSection.new(heading: "CONTEXT", lines: summary_lines(blocks)),
                   PanelSection.new(heading: heading, items: items)
@@ -123,7 +127,7 @@ module HColumns
       shown = blocks.first(MAX)
       items = shown.each_with_index.map { |block, i| block_item(block, rank: i + 1) }
       lines = blocks.size > MAX ? ["… #{blocks.size - MAX} more below the top #{MAX} (bounded view)"] : []
-      heading = "ALL BLOCKS (#{blocks.size}, by estimated billed cost)"
+      heading = "ALL BLOCKS (#{blocks.size}, by estimated cost-equivalent)"
       Panel.new(node: node, mode: name,
                 sections: [PanelSection.new(heading: heading, items: items, lines: lines)])
     end
@@ -147,7 +151,8 @@ module HColumns
       p = node.properties
       body = Providers::Transcript.text_for(node, limit: MAX_LINES)
       header = ["#{p[:name]} — #{p[:kind]}, turn #{p[:turn]}",
-                "#{abbrev(p[:tokens])} tok × #{p[:resident]} turns resident ≈ #{abbrev(p[:cost])} billed", ""]
+                "#{abbrev(p[:tokens])} tok × #{p[:resident]} turns resident ≈ " \
+                "#{abbrev(p[:cost])} cost-equivalent (#{abbrev(p[:wire])} wire)", ""]
       Panel.new(node: node, mode: name,
                 sections: [PanelSection.new(heading: "TOKENS", lines: header + body)])
     end
