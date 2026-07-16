@@ -103,12 +103,36 @@ module HColumns
         @clock = clock
       end
 
-      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, keyword_init: true)
+      # The TUI's input prompt. Matched as the bare glyph on purpose: gastown
+      # matched "❯ " with a regular space and broke, because Claude Code emits a
+      # NBSP after it (their issue #1387). Nothing downstream needs the space.
+      #
+      # This is readiness detection, not completion detection — the one use of
+      # pane-scraping hugel3 kept too ("reads capture-pane for boot-readiness UI
+      # detection"). Being wrong here costs a retry on the next poll; being wrong
+      # about completion would cost a truncated answer.
+      #
+      # But ❯ ALONE IS NOT READY, and this cost a real run to learn: the trust
+      # dialog draws its selected option as "❯ 1. Yes, I trust this folder". So
+      # the instant accept_trust pressed Enter, the still-rendered dialog matched,
+      # the prompt was pasted onto a dying screen, delivery was marked done, and
+      # the task waited out its whole timeout for an answer to a question nothing
+      # had been asked. Exactly gastown's bug — a marker that appears in a state
+      # you are not in yet. Readiness is the prompt AND no dialog over it.
+      READY_PROMPT = /❯/
+
+      def ready?(handle)
+        out, = tmux("capture-pane", "-p", "-J", "-t", handle.pane)
+        out.match?(READY_PROMPT) && !out.match?(TRUST_DIALOG)
+      end
+
+      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, :delivered, keyword_init: true)
 
       def start(task)
         FileUtils.mkdir_p(@tasks_dir)
         handle = Handle.new(session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
-                            prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"), started_at: @clock.call)
+                            prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"),
+                            started_at: @clock.call, delivered: false)
         File.write(handle.prompt_file, "#{task.prompt}\n")
 
         kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
@@ -139,14 +163,29 @@ module HColumns
         true
       end
 
+      # Two jobs, in order: get the prompt in, then notice it's answered.
+      #
+      # Delivery lives HERE rather than in start() so a boot doesn't block the
+      # runner — Claude takes ~10s to come up, and several tasks should be able to
+      # boot at once. The prompt cannot be pasted until the TUI exists to receive
+      # it, so the handle carries whether that has happened yet.
+      #
       # Done when the spawned agent's own hook says so. `phase reviewing` is what
       # the Stop hook emits — harness-enforced, so it cannot be fooled by a
-      # cosmetic string or by the prompt echoing itself.
+      # cosmetic string or by the prompt echoing itself. Verified against a real
+      # agent: the hook fired ~4s after it answered.
       def poll(handle)
         return { status: :failed, response: "tmux session #{handle.session} vanished" } unless alive?(handle.session)
-        return :running unless File.file?(handle.log)
 
-        return :running unless finished?(handle.log)
+        unless handle.delivered
+          return :running unless ready?(handle)
+
+          deliver(handle)
+          handle.delivered = true
+          return :running
+        end
+
+        return :running unless File.file?(handle.log) && finished?(handle.log)
 
         { status: :done, response: transcript_tail(handle) }
       end

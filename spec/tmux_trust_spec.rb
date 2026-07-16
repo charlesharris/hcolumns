@@ -53,6 +53,18 @@ RSpec.describe HColumns::Strategies::TmuxClaudeCode do
     expect(described_class.trusted?("/repo/x", config: File.join(@dir, "absent.json"))).to be true
   end
 
+# The bug a real run bought: readiness was `❯` alone, but the trust dialog
+# draws its selected option as "❯ 1. Yes, I trust this folder". So the instant
+# the dialog was accepted it still matched, the prompt was pasted onto a dying
+# screen, delivery was marked done, and the task waited out its whole timeout
+# for an answer to a question nothing had been asked. Readiness is the prompt
+# AND no dialog over it.
+it "does not mistake the trust dialog's own ❯ for a ready prompt" do
+  dialog = "❯ 1. Yes, I trust this folder\n  2. No, exit"
+  expect(dialog).to match(described_class::READY_PROMPT) # the marker alone lies…
+  expect(dialog).to match(described_class::TRUST_DIALOG) # …so readiness must exclude this
+end
+
   it "matches the real dialog's wording, not a paraphrase" do
     # Captured verbatim from a live untrusted pane.
     pane = "❯ 1. Yes, I trust this folder\n  2. No, exit\nEnter to confirm · Esc to cancel"
