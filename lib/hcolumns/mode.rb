@@ -58,6 +58,9 @@ module HColumns
         modes[:output] = OutputMode.new   # a test run / log line's captured output
         modes[:bead] = BeadMode.new       # a bead's body (description/design/notes)
         modes[:turns] = TurnsMode.new     # a session's log partitioned into turns
+        modes[:context] = ContextMode.new       # a transcript's top context consumers
+        modes[:blocks] = ContextBlocksMode.new  # …all of them, cost-ranked
+        modes[:text] = ContextTextMode.new      # one block's actual tokens
         modes
       end
     end

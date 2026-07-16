@@ -23,6 +23,10 @@ module HColumns
   #                            by cmd) re-emitted per state, latest fold wins — the
   #                            :phase pattern, so a live walk shows ◐ flip to ✓/✗
   #   log <text…>              an output/log line → LogLine the change EMITTED
+  #   transcript <path>        where the session's raw context lives → a Transcript
+  #                            node the context stratum expands lazily (hc-33x).
+  #                            A pointer, never the corpus: the ~700k tokens stay
+  #                            on disk until someone descends.
   #   done                     the eof marker (the live badge flips to "complete")
   #
   # A hook fires the bridge once per event, so it is a *fresh process every time*
@@ -57,6 +61,7 @@ module HColumns
       when "turn" then turn(rest)
       when "edit" then edit(rest)
       when "phase" then phase(rest)
+      when "transcript" then transcript(rest)
       when "test" then test(rest)
       when "usage" then usage(rest)
       when "log" then log_line(rest)
@@ -162,6 +167,29 @@ module HColumns
       # Re-emit the Session node with the new phase — latest fold wins, exactly the
       # event AgentSession uses to drive the live mode resolver.
       emit_node(session_node(name.to_sym))
+    end
+
+    # `transcript <path>` — the POINTER to the session's raw context (hc-33x).
+    # Only the hook knows this path, and the graph can't re-derive it; the
+    # ~700k tokens it addresses stay on disk, read lazily by Providers::Transcript
+    # when someone actually descends. So the log records an address, not a corpus.
+    #
+    # A node of its own rather than a Session property: a stateless `phase` call
+    # from a later hook process re-emits the Session and would REPLACE properties
+    # it can't know (apply_node is last-word-wins on the whole node), silently
+    # dropping the path. An edge accretes instead — and the transcript is a thing
+    # in its own right, with blocks hanging off it.
+    def transcript(rest)
+      path = rest.to_s.strip
+      return if path.empty?
+
+      full = File.expand_path(path)
+      node = Providers::Transcript.node_for(full)
+      emit_node(node)
+      # session_node's phase argument is irrelevant here: an id comes from identity
+      # alone, and we only want the spine's id to hang the edge from. Deliberately
+      # NOT re-emitting the Session node — that would clobber the live phase.
+      emit_obs(session_node(:editing), node, :HAS_TRANSCRIPT, :structure, "the session's raw context")
     end
 
     # A test run's lifecycle as node states (the juggler takeaway, survey #2:

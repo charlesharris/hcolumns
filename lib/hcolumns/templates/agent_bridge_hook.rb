@@ -30,7 +30,12 @@ HCOL = ENV.fetch("HCOL_BIN", "hcol")
 # Feed one neutral-vocabulary command to `hcol bridge`. Best-effort: a bridge
 # hiccup must never fail the tool call it's observing, so errors are swallowed.
 def bridge(command)
-  system(HCOL, "bridge", "--log", LOG, *command.split(" "), out: File::NULL, err: File::NULL)
+  # One arg = one command. Splitting on spaces here (as this did) forced the CLI
+  # to join argv back into a single string, which silently broke the documented
+  # "one command per arg" contract for everyone else: `bridge "session k Title"
+  # "phase exploring"` folded the second command into the first one's title.
+  # system() takes an array, so there was never a quoting reason to split.
+  system(HCOL, "bridge", "--log", LOG, command, out: File::NULL, err: File::NULL)
 rescue StandardError
   nil
 end
@@ -126,6 +131,11 @@ when "PostToolUse"
       bridge("test #{status} #{cmd}") # re-emits the node PreToolUse started (◐ → ✓/✗)
     end
   end
+when "SessionStart"
+  # Point the graph at this session's raw context (hc-33x). Only the hook knows
+  # where the transcript lives, and the path is all we send — the ~700k tokens
+  # behind it stay on disk until someone actually descends into them.
+  bridge("transcript #{payload['transcript_path']}") if payload["transcript_path"]
 when "Stop", "SubagentStop"
   # No `done` here: this log ACCRETES across sessions (the next session appends to
   # the same file), and an eof mid-log stops every TailReader that reaches it —

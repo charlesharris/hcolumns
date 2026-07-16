@@ -32,6 +32,9 @@ module HColumns
     # test lifecycle (Pre/PostToolUse on Bash), edits, and the turn's close +
     # token usage (Stop). Matchers mirror the dogfood settings.json.
     EVENTS = [
+      # Once per session: the pointer to the raw transcript (hc-33x). Fires here
+      # rather than on Stop so the log gains one line, not one per turn.
+      { event: "SessionStart", matcher: nil },
       { event: "UserPromptSubmit", matcher: nil },
       { event: "PreToolUse", matcher: "Bash" },
       { event: "PostToolUse", matcher: "Edit|Write|MultiEdit|NotebookEdit|Bash" },

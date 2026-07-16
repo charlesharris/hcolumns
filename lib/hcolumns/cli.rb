@@ -185,7 +185,12 @@ module HColumns
       if @argv.empty?
         $stdin.each_line { |line| agent.apply(line) }
       else
-        agent.apply(@argv.join(" "))
+        # One command per arg — what the help, the skill and STATUS have always
+        # promised. This used to `join(" ")` every arg into a single command, so
+        # `bridge "session k Title" "phase exploring"` silently made the phase part
+        # of the title (found live: a Session named "Task: … phase exploring").
+        # Quote each command; the hook passes exactly one.
+        @argv.each { |command| agent.apply(command) }
       end
       0
     end
@@ -719,6 +724,9 @@ module HColumns
       providers << Providers::Beads.new(beads_root) if beads_root
       root = repo || (File.directory?(path) ? path : File.dirname(path))
       providers << Providers::RubyCode.new(root)
+      # The context stratum is stateless — a Transcript node carries its own path,
+      # so the provider needs no root and the class itself is the instance.
+      providers << Providers::Transcript
       # A real walk is log-backed (providers record as they expand) and carries
       # the accreting flag store: prior sessions' judgments replay in, and new
       # flags append as they happen.

@@ -41,6 +41,21 @@ RSpec.describe HColumns::AgentBridge do
     expect(File.file?(nested)).to be true
   end
 
+  # The pointer, not the corpus (hc-33x): only the hook knows where the raw
+  # context lives, and the ~700k tokens behind the path stay on disk.
+  it "records the transcript as a node of its own, without touching the Session" do
+    b = bridge
+    b.apply("phase testing")
+    b.apply("transcript /tmp/some/session.jsonl")
+
+    transcript = graph.nodes.find { |n| n.type == :Transcript }
+    expect(transcript.properties[:path]).to eq("/tmp/some/session.jsonl")
+    expect(edge(:Session, :HAS_TRANSCRIPT)).not_to be_nil
+    # A Session property would be clobbered by the next stateless `phase` process
+    # (apply_node is last-word-wins on the WHOLE node) — so the phase must survive.
+    expect(graph.nodes.find { |n| n.type == :Session }.properties[:phase]).to eq(:testing)
+  end
+
   it "writes the session spine as a header on the first command" do
     bridge.apply("edit lib/foo.rb")
     g = graph

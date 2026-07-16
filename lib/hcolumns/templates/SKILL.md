@@ -27,6 +27,12 @@ hcol json <path> --mode blame     # per-line commit attribution (files in git)
 hcol json session                 # the live session: DRIVEN_BY, IN_PROJECT, PROPOSES
 hcol json session --mode turns    # what each prompt produced, newest first,
                                   #   with token usage (in→out) per turn
+hcol json <transcript> --mode context   # WHERE the tokens went: the session's raw
+                                  #   context as blocks ranked by estimated billed
+                                  #   cost (size × turns resident). Reach it via
+                                  #   the session's HAS_TRANSCRIPT edge; `blocks`
+                                  #   lists them all, and descending one shows the
+                                  #   actual text that was billed
 hcol search <term> [--type T]     # find nodes WITHOUT an address to start from:
                                   #   name/path substring across every stratum; prints
                                   #   "obj:id  Type  name  path" lines — feed to json
@@ -61,8 +67,9 @@ hcol bridge --log .hcolumns/live.jsonl "log <milestone or decision, one line>"
 ```
 
 - **`session`** — at the start of a substantive task, name it (e.g.
-  `session auth-refactor Task: extract the token validator`). The browser
-  header follows. Without this the session shows a stale or generic title.
+  `session auth-refactor extract the token validator`). The browser header
+  follows. Without this the session shows a stale or generic title. Don't type
+  "Task:" — the fold adds it, so passing it yields "Task: Task: …".
 - **`phase`** — on real transitions (exploring → editing → testing →
   reviewing). The UI's auto-selected tabs follow your phase; hooks only set
   `testing` (on test runs) and `reviewing` (on stop), so `exploring`/

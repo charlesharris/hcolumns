@@ -33,7 +33,8 @@ RSpec.describe HColumns::Initializer do
                                     "settings.json" => :written)
     expect(File.executable?(File.join(@dir, ".claude", "hooks", "agent_bridge_hook.rb"))).to be true
     expect(File.read(File.join(@dir, ".claude", "skills", "hcol", "SKILL.md"))).to include("hcol json session")
-    expect(settings["hooks"].keys).to contain_exactly("UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")
+    expect(settings["hooks"].keys).to contain_exactly("SessionStart", "UserPromptSubmit", "PreToolUse",
+                                                      "PostToolUse", "Stop")
   end
 
   # The templates ARE what hcolumns runs in place (no copy in .claude/), so init
