@@ -26,9 +26,12 @@ module HColumns
   #   task <key> <state> <text…>  an LLM task's lifecycle (pending/running/done/failed)
   #                            → one digest-keyed LLMTask node re-emitted per state,
   #                            latest fold wins — the `test` pattern (hc-4s4)
-  #   request <key> <prompt…>  an INTENT, not an observation: someone wants a fix.
-  #                            An external runner picks it up; the log only records
-  #                            that it was asked for (hc-bnh).
+  #   request <kind> <subject> <prompt…>  the only INTENT verb: someone wants an LLM
+  #                            task run. `kind` is provenance (fix/ask/…), `subject`
+  #                            the node it concerns (or `-`); the runner reads
+  #                            NEITHER — a fix is just a request with a good prompt.
+  #                            Carries no state: the execution's state lives on the
+  #                            LLMTask hung off it (hc-bnh, hc-4s4).
   #   transcript <path>        where the session's raw context lives → a Transcript
   #                            node the context stratum expands lazily (hc-33x).
   #                            A pointer, never the corpus: the ~700k tokens stay
@@ -177,6 +180,63 @@ module HColumns
       emit_node(session_node(name.to_sym))
     end
 
+    # `request <kind> <subject> <prompt…>` — the log's only INTENT. Everything else
+    # in this vocabulary records what happened; this records what someone WANTS to
+    # happen, so an external runner can pick it up and put an LLM on it.
+    #
+    # GENERIC by construction (Charris's call): the runner must never look for
+    # "a fix". A fix is just a request whose prompt came from a suggestion — `kind`
+    # describes its provenance for a human reading the column, and `subject` is the
+    # node it concerns (a suggestion, a file, or `-` for nothing). Dispatch reads
+    # neither. Anything that can phrase a prompt can queue work: `hcol fix`, `hcol
+    # ask`, a hook, a future rule. The runner just sees "an LLM task to run".
+    #
+    # The event is still an observation: it records that a request WAS MADE, at a
+    # time, by someone. It does not *do* anything. Dispatch belongs to a consumer,
+    # which is load-bearing: the log is replayed on every `hcol walk f.jsonl`, and
+    # a request that fired on replay would re-run work weeks later, from a
+    # snapshot, with no one watching.
+    #
+    # NO STATE HERE, deliberately. A request is a fact and facts don't change —
+    # the EXECUTION's state lives on the LLMTask the runner hangs off it
+    # (Request -DISPATCHED_AS-> LLMTask). That split is what lets a request be
+    # retried (a second attempt is a second task, not a rewritten history), and it
+    # makes "what is outstanding?" a question the GRAPH answers — a request with no
+    # task — instead of bookkeeping somebody has to keep in sync.
+    def request(rest)
+      kind, subject, prompt = rest.to_s.strip.split(/\s+/, 3)
+      return if kind.nil? || kind.empty? || prompt.to_s.strip.empty?
+
+      text = prompt.to_s.strip
+      node = request_node(kind, subject, text)
+      emit_node(node)
+      # :agent evidence, not :structure — a request is a stated intent, not a
+      # verified fact about the world.
+      emit_obs(session_node(:editing), node, :REQUESTED, :agent, "#{kind} requested")
+      # Only when it concerns something: a bare ask is about nothing, and a
+      # dangling edge to "-" would be a lie.
+      return if subject.to_s.strip.empty? || subject == "-"
+
+      emit_about(node, subject, kind)
+    end
+
+    def request_node(kind, subject, text)
+      Node.new(type: :Request,
+               identity: { scheme: "agent.request", key: "#{@session}:#{digest("#{kind}:#{subject}:#{text}")}" },
+               properties: { name: "#{kind}: #{text[0, 50]}", prompt: text, kind: kind.to_sym,
+                             subject: subject, requested_by: ENV["USER"] || "user" })
+    end
+
+    # The subject is an existing node id (`obj:…`), so the edge points straight at
+    # it — a fix request lands on the suggestion it came from, and the suggestion's
+    # incoming edges then show it was asked about.
+    def emit_about(node, subject, kind)
+      obs = Observation.new(provider: :agent, subject_id: node.id, target_id: subject,
+                            edge_type: :ABOUT, weight: 1.0, evidence_kind: :agent,
+                            observed_at: now, evidence_summary: "the #{kind} concerns this")
+      append(Persistence.line_for(kind: :observe, payload: obs))
+    end
+
     # `transcript <path>` — the POINTER to the session's raw context (hc-33x).
     # Only the hook knows this path, and the graph can't re-derive it; the
     # ~700k tokens it addresses stay on disk, read lazily by Providers::Transcript
@@ -187,34 +247,6 @@ module HColumns
     # it can't know (apply_node is last-word-wins on the whole node), silently
     # dropping the path. An edge accretes instead — and the transcript is a thing
     # in its own right, with blocks hanging off it.
-    # `request <key> <prompt…>` — the log's first INTENT (hc-bnh). Everything else
-    # in this vocabulary records what happened; this records what someone WANTS to
-    # happen, so that an external runner can pick it up and put an agent on it.
-    #
-    # The event is still an observation: it records that a request WAS MADE, at a
-    # time, by someone. It does not *do* anything. Dispatch belongs to the
-    # consumer, which tracks its own cursor — exactly as TailReader and the SSE
-    # streams already do. That separation is load-bearing: the log is replayed on
-    # every `hcol walk f.jsonl`, and a request that fired on replay would re-run a
-    # fix weeks later, from a snapshot, with no one watching.
-    #
-    # hcolumns stays agent-agnostic here too. This emits a NEUTRAL prompt; the
-    # thin runner that turns it into `claude -p` is external, the mirror of the
-    # hook on the way in. And the loop closes: that agent's own bridge hook writes
-    # its work back into this same log as a ProposedChange.
-    def request(rest)
-      key, prompt = rest.to_s.strip.split(/\s+/, 2)
-      return if key.nil? || key.empty? || prompt.to_s.strip.empty?
-
-      node = Node.new(type: :FixRequest, identity: { scheme: "agent.request", key: "#{@session}:#{key}" },
-                      properties: { name: "fix requested: #{prompt.to_s.strip[0, 50]}", prompt: prompt.to_s.strip,
-                                    subject: key, state: :open, requested_by: ENV["USER"] || "user" })
-      emit_node(node)
-      # :agent evidence, not :structure — a request is a stated intent, not a
-      # verified fact about the world.
-      emit_obs(session_node(:editing), node, :REQUESTED, :agent, "fix requested for #{key}")
-    end
-
     def transcript(rest)
       path = rest.to_s.strip
       return if path.empty?
@@ -262,21 +294,25 @@ module HColumns
     }.freeze
 
     def task(rest)
-      key, state, text = rest.to_s.strip.split(/\s+/, 3)
+      key, state, request_id, text = rest.to_s.strip.split(/\s+/, 4)
       return if key.nil? || key.empty?
 
       spec = TASK_STATES.fetch(state, TASK_STATES["pending"])
-      node = task_node(key, spec, text)
+      node = task_node(key, spec, text, request_id)
       emit_node(node)
       # :agent — a task is the agent's own account of what it was asked and answered,
       # not a verifiable fact about the world.
       emit_obs(change_node, node, :DISPATCHED, :agent, "#{spec[:word]}: #{key}")
     end
 
-    def task_node(key, spec, text)
+    def task_node(key, spec, text, request_id = nil)
+      # request_id is what makes a request answerable: LLMTaskRunner.outstanding
+      # asks the GRAPH which requests have no task yet, so this back-reference is
+      # the whole bookkeeping — no cursor file to drift.
+      id = request_id.to_s.empty? || request_id == "-" ? nil : request_id
       Node.new(type: :LLMTask, identity: { scheme: "agent.task", key: "#{@session}:#{key}" },
                properties: { name: "#{spec[:glyph]} #{text.to_s.strip[0, 60]}", state: spec[:state],
-                             task_key: key, output: [text.to_s.strip] })
+                             task_key: key, request_id: id, output: [text.to_s.strip] })
     end
 
     def test_node(cmd, spec)

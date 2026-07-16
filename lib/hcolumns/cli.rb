@@ -27,6 +27,8 @@ module HColumns
       when "bridge" then bridge
       when "init" then init(@argv.first)
       when "fix" then fix(@argv.first)
+      when "ask" then ask(@argv.first)
+      when "run" then run_requests
       when "serve" then serve(@argv.first)
       when "search" then search(@argv.first)
       when "nodes" then list_nodes
@@ -51,6 +53,8 @@ module HColumns
         when "--floor" then opts[:floor] = @argv.shift&.to_f
         when "--strict" then opts[:role] = "reviewer"
         when "--live" then opts[:live] = true
+        when "--echo" then opts[:echo] = true
+        when "--timeout" then opts[:timeout] = @argv.shift&.to_i
         when "--port" then opts[:port] = @argv.shift&.to_i
         when "--log" then opts[:log] = @argv.shift
         when "--session" then opts[:session] = @argv.shift
@@ -218,11 +222,63 @@ module HColumns
 
       log = bridge_log(Dir.pwd)
       AgentBridge.new(path: log, session: @opts[:session] || "live")
-                 .apply("request #{node.id} #{prompt.gsub(/\s+/, ' ')}")
+                 .apply("request fix #{node.id} #{prompt.gsub(/\s+/, ' ')}")
       puts "requested: #{node.properties[:name]}"
       puts "  → appended to #{log.sub("#{Dir.pwd}/", '')}. A runner tailing the log can pick it up;"
       puts "    nothing has run. `hcol json session` shows the REQUESTED edge."
       0
+    end
+
+    # `hcol ask "<prompt>"` — queue an LLM task with no special provenance. The
+    # generic form `hcol fix` is a special case of: both write the same Request,
+    # and the runner cannot tell them apart.
+    def ask(prompt)
+      if prompt.to_s.strip.empty?
+        warn 'usage: hcol ask "<prompt>"   (queues a request; `hcol run` executes it)'
+        return 1
+      end
+
+      log = bridge_log(Dir.pwd)
+      AgentBridge.new(path: log, session: @opts[:session] || "live")
+                 .apply("request ask - #{prompt.to_s.gsub(/\s+/, ' ')}")
+      puts "queued: #{prompt.to_s.strip[0, 60]}"
+      puts "  → nothing has run. `hcol run` executes outstanding requests."
+      0
+    end
+
+    # `hcol run` — execute outstanding requests (hc-4s4). The connector: the log
+    # carries intent, this puts an LLM on it, and the answer returns as a node.
+    #
+    # Outstanding is a question for the GRAPH — a Request with no LLMTask hanging
+    # off it — not a cursor file that can drift out of sync with the log it
+    # describes. Replay is safe by construction: a replayed log contains the task
+    # too, so nothing looks outstanding and nothing re-fires.
+    def run_requests
+      workspace, _root = composed_target(Dir.pwd, root: :session)
+      pending = LLMTaskRunner.outstanding(workspace.graph)
+      if pending.empty?
+        puts "nothing outstanding. (`hcol fix <suggestion>` or `hcol ask \"…\"` queues work.)"
+        return 0
+      end
+
+      runner = LLMTaskRunner.new(strategy: run_strategy, log: bridge_log(Dir.pwd),
+                                 session: @opts[:session] || "live")
+      puts "#{pending.size} outstanding request#{pending.size == 1 ? '' : 's'}:"
+      pending.each { |r| puts "  · #{r.properties[:kind]}: #{r.properties[:prompt].to_s[0, 62]}" }
+      runner.submit_outstanding(workspace.graph)
+      puts "\ndispatched. watch them in `hcol serve .` — each task flips ◌ → ◐ → ✓ in place."
+      runner.run_to_completion(timeout: (@opts[:timeout] || 600).to_i)
+      runner.tasks.each_value { |t| puts "  #{t.state == :done ? '✓' : '✗'} #{t.prompt.to_s[0, 62]}" }
+      0
+    end
+
+    # The default is a real agent in a real pane you can `tmux attach` to and take
+    # over — the reason to want tmux over a headless call. --echo swaps in the
+    # double, so the wiring can be exercised without spending a token.
+    def run_strategy
+      return Strategies::Echo.new if @opts[:echo]
+
+      Strategies::TmuxClaudeCode.new(root: Dir.pwd, hcol_bin: ENV.fetch("HCOL_BIN", "hcol"))
     end
 
     # `hcol init [dir]` — install the bridge hook + skill into any repo (hc-ouk),
@@ -846,6 +902,11 @@ module HColumns
           hcol explore demo          the demo route (Task→change→files→test→log)
           hcol walk demo --live      watch the demo session's column grow
                                      (`session`/`sessions` still mean the demo where no bridge log exists)
+          hcol ask "<prompt>"        queue an LLM task (a Request in the log). Nothing runs
+          hcol run [--echo]          execute every OUTSTANDING request — a Request with no task
+                                     yet. Drives Claude Code in a tmux pane you can attach to and
+                                     take over; each task flips ◌ → ◐ → ✓ in the columns as it goes.
+                                     --echo uses the test double (no tokens); --timeout N (default 600)
           hcol fix <suggestion-id>   ask for a suggestion (from a transcript's `advice` tab) to be
                                      acted on: appends ONE request event to the bridge log and stops.
                                      Nothing runs — a runner tailing the log decides whether to put an
