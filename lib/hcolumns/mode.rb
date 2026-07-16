@@ -60,6 +60,7 @@ module HColumns
         modes[:turns] = TurnsMode.new     # a session's log partitioned into turns
         modes[:context] = ContextMode.new       # a transcript's top context consumers
         modes[:blocks] = ContextBlocksMode.new  # …all of them, cost-ranked
+        modes[:advice] = ContextAdviceMode.new  # the fixes worth making, by saving
         modes[:text] = ContextTextMode.new      # one block's actual tokens
         modes
       end

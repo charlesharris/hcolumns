@@ -32,10 +32,12 @@ module HColumns
       Sessions: %i[default details],
       # A transcript opens on the top consumers — arriving at "the context" and
       # being shown all 792 blocks would bury the story. `blocks` is the drill-down.
-      Transcript: %i[context blocks details],
+      Transcript: %i[context advice blocks details],
       # A block IS its tokens: the whole point of descending is to read the thing
       # the count was counting, so the text leads and its relations are a tab away.
       ContextBlock: %i[text default details],
+      # A suggestion IS its advice + what it points at; default shows ABOUT.
+      Suggestion: %i[default details],
       Bead: %i[default bead details],
       Beads: %i[default details],
       Person: %i[git details],

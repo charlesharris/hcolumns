@@ -26,6 +26,7 @@ module HColumns
       when "produce" then produce(@argv[0], @argv[1])
       when "bridge" then bridge
       when "init" then init(@argv.first)
+      when "fix" then fix(@argv.first)
       when "serve" then serve(@argv.first)
       when "search" then search(@argv.first)
       when "nodes" then list_nodes
@@ -192,6 +193,35 @@ module HColumns
         # Quote each command; the hook passes exactly one.
         @argv.each { |command| agent.apply(command) }
       end
+      0
+    end
+
+    # `hcol fix <suggestion-id>` — ask for a suggestion to be acted on (hc-bnh).
+    #
+    # Deliberately does NOT run anything. It appends one request event to the
+    # bridge log and stops; a runner outside hcolumns decides whether to put an
+    # agent on it. Two reasons, both load-bearing: the library stays agent-agnostic
+    # (the runner is the outbound mirror of the inbound hook), and dispatching code
+    # changes at somebody is not something a read-model should do behind your back.
+    def fix(selector)
+      found = selector && live_target_for(selector)
+      node = found && found[0].graph.node(found[1])
+      unless node && node.type == :Suggestion
+        warn "usage: hcol fix <suggestion-id>   (an obj: id from a transcript's `advice` tab)"
+        return 1
+      end
+      prompt = node.properties[:fix]
+      unless prompt
+        warn "#{node.properties[:name]}: reported for honesty, not action — there's no fix to hand off"
+        return 1
+      end
+
+      log = bridge_log(Dir.pwd)
+      AgentBridge.new(path: log, session: @opts[:session] || "live")
+                 .apply("request #{node.id} #{prompt.gsub(/\s+/, ' ')}")
+      puts "requested: #{node.properties[:name]}"
+      puts "  → appended to #{log.sub("#{Dir.pwd}/", '')}. A runner tailing the log can pick it up;"
+      puts "    nothing has run. `hcol json session` shows the REQUESTED edge."
       0
     end
 
@@ -727,6 +757,7 @@ module HColumns
       # The context stratum is stateless — a Transcript node carries its own path,
       # so the provider needs no root and the class itself is the instance.
       providers << Providers::Transcript
+      providers << Providers::ContextAdvice
       # A real walk is log-backed (providers record as they expand) and carries
       # the accreting flag store: prior sessions' judgments replay in, and new
       # flags append as they happen.
@@ -815,6 +846,10 @@ module HColumns
           hcol explore demo          the demo route (Task→change→files→test→log)
           hcol walk demo --live      watch the demo session's column grow
                                      (`session`/`sessions` still mean the demo where no bridge log exists)
+          hcol fix <suggestion-id>   ask for a suggestion (from a transcript's `advice` tab) to be
+                                     acted on: appends ONE request event to the bridge log and stops.
+                                     Nothing runs — a runner tailing the log decides whether to put an
+                                     agent on it, and its work lands back in the graph as a ProposedChange
           hcol search <term>         find nodes by name/path substring across every stratum of
                                      the cwd's composed graph (--type Bead|SourceFile|TestRun|…);
                                      prints id · type · name · path — feed the id or path to json

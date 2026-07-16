@@ -108,6 +108,54 @@ module HColumns
     end
   end
 
+  # The fixes worth making: suggestions ranked by what they'd actually save.
+  # Every row is a real node — descend it to reach the block it's about, and the
+  # file that block read (hc-bnh: click through to the association).
+  class ContextAdviceMode < Mode
+    include ContextRanking
+
+    def initialize(name: :advice)
+      super(name: name)
+    end
+
+    def applies?(node)
+      node.type == :Transcript
+    end
+
+    def panel(node, workspace, now:)
+      workspace.expand(node.id, now: now)
+      graph = workspace.graph
+      suggestions = graph.edges_from(node.id).select { |e| e.type == :SUGGESTS }
+                         .filter_map { |e| graph.node(e.target_id) }
+                         .sort_by { |n| -n.properties[:saving].to_i }
+      return empty_panel(node) if suggestions.empty?
+
+      total = suggestions.sum { |s| s.properties[:saving].to_i }
+      items = suggestions.map do |s|
+        PanelItem.new(label: s.properties[:name].to_s, target_id: s.id,
+                      glyph: s.properties[:fix] ? "▲" : "·",
+                      detail: [s.properties[:advice].to_s])
+      end
+      Panel.new(node: node, mode: name, sections: [
+                  PanelSection.new(heading: "IF ACTED ON",
+                                   lines: ["~#{abbrev(total)} cost-equivalent across #{items.size} " \
+                                           "suggestion#{items.size == 1 ? '' : 's'} — ESTIMATES, and " \
+                                           "advice is a claim, not a fact (see each row's confidence).",
+                                           "▲ = has a fix an agent could act on; · = reported for honesty only."]),
+                  PanelSection.new(heading: "SUGGESTIONS (by estimated saving)", items: items)
+                ])
+    end
+
+    private
+
+    def empty_panel(node)
+      Panel.new(node: node, mode: name, sections: [
+                  PanelSection.new(heading: "SUGGESTIONS",
+                                   lines: ["(nothing worth flagging — no rule fired above the noise floor)"])
+                ])
+    end
+  end
+
   # The drill-down: every block, still cost-ranked. Bounded, and says so.
   class ContextBlocksMode < Mode
     include ContextRanking

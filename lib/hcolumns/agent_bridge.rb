@@ -23,6 +23,9 @@ module HColumns
   #                            by cmd) re-emitted per state, latest fold wins — the
   #                            :phase pattern, so a live walk shows ◐ flip to ✓/✗
   #   log <text…>              an output/log line → LogLine the change EMITTED
+  #   request <key> <prompt…>  an INTENT, not an observation: someone wants a fix.
+  #                            An external runner picks it up; the log only records
+  #                            that it was asked for (hc-bnh).
   #   transcript <path>        where the session's raw context lives → a Transcript
   #                            node the context stratum expands lazily (hc-33x).
   #                            A pointer, never the corpus: the ~700k tokens stay
@@ -62,6 +65,7 @@ module HColumns
       when "edit" then edit(rest)
       when "phase" then phase(rest)
       when "transcript" then transcript(rest)
+      when "request" then request(rest)
       when "test" then test(rest)
       when "usage" then usage(rest)
       when "log" then log_line(rest)
@@ -179,6 +183,34 @@ module HColumns
     # it can't know (apply_node is last-word-wins on the whole node), silently
     # dropping the path. An edge accretes instead — and the transcript is a thing
     # in its own right, with blocks hanging off it.
+    # `request <key> <prompt…>` — the log's first INTENT (hc-bnh). Everything else
+    # in this vocabulary records what happened; this records what someone WANTS to
+    # happen, so that an external runner can pick it up and put an agent on it.
+    #
+    # The event is still an observation: it records that a request WAS MADE, at a
+    # time, by someone. It does not *do* anything. Dispatch belongs to the
+    # consumer, which tracks its own cursor — exactly as TailReader and the SSE
+    # streams already do. That separation is load-bearing: the log is replayed on
+    # every `hcol walk f.jsonl`, and a request that fired on replay would re-run a
+    # fix weeks later, from a snapshot, with no one watching.
+    #
+    # hcolumns stays agent-agnostic here too. This emits a NEUTRAL prompt; the
+    # thin runner that turns it into `claude -p` is external, the mirror of the
+    # hook on the way in. And the loop closes: that agent's own bridge hook writes
+    # its work back into this same log as a ProposedChange.
+    def request(rest)
+      key, prompt = rest.to_s.strip.split(/\s+/, 2)
+      return if key.nil? || key.empty? || prompt.to_s.strip.empty?
+
+      node = Node.new(type: :FixRequest, identity: { scheme: "agent.request", key: "#{@session}:#{key}" },
+                      properties: { name: "fix requested: #{prompt.to_s.strip[0, 50]}", prompt: prompt.to_s.strip,
+                                    subject: key, state: :open, requested_by: ENV["USER"] || "user" })
+      emit_node(node)
+      # :agent evidence, not :structure — a request is a stated intent, not a
+      # verified fact about the world.
+      emit_obs(session_node(:editing), node, :REQUESTED, :agent, "fix requested for #{key}")
+    end
+
     def transcript(rest)
       path = rest.to_s.strip
       return if path.empty?

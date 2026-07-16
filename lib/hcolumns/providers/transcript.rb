@@ -142,7 +142,7 @@ module HColumns
             identity: { scheme: "transcript.block", key: "#{key}\x1f#{block[:line]}:#{block[:index]}" },
             properties: { name: block[:label], kind: block[:kind], tokens: block[:tokens],
                           resident: block[:resident], cost: block[:cost], wire: block[:wire],
-                          turn: block[:turn],
+                          turn: block[:turn], body: block[:body], command: block[:command],
                           path: path, line: block[:line], block_index: block[:index],
                           file: block[:file] }
           )
@@ -188,7 +188,30 @@ module HColumns
         def describe(block, entry, turn, line_no, index, call)
           { kind: block["type"], turn: turn, line: line_no, index: index,
             tokens: (JSON.generate(block).bytesize / BYTES_PER_TOKEN),
-            label: label_for(block, entry, turn, call), file: file_of(block, call) }
+            label: label_for(block, entry, turn, call), file: file_of(block, call),
+            body: digest(fingerprint_of(block)), command: call&.dig("input", "command") }
+        end
+
+        # A cheap content fingerprint (djb2, the AgentBridge digest) so the advice
+        # rules can spot the same bytes arriving twice — the largest waste pattern
+        # we measured (13.3% of cost within a session).
+        #
+        # Fingerprints the CONTENT, not the rendered text and not the whole block:
+        # two reads of one file must match despite different tool_use_ids, but an
+        # IMAGE has no text at all — rendering it gave "", so every image and every
+        # empty result collided into one bogus 56x "duplicate" group. Images are
+        # the biggest blocks we have (~53k tok), so that false positive landed
+        # exactly where it did the most damage.
+        def fingerprint_of(block)
+          case block["type"]
+          when "tool_result" then JSON.generate(block["content"])
+          when "tool_use" then JSON.generate(block["input"])
+          else body_of(block).to_s
+          end
+        end
+
+        def digest(text)
+          text.each_char.reduce(5381) { |h, ch| ((h * 33) ^ ch.ord) & 0xffffffff }.to_s(16)
         end
 
         # What the row says. A tool call names the tool and its target; a result
