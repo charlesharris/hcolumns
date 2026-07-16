@@ -30,9 +30,12 @@ hcol json <path> --mode blame     # per-line commit attribution (files in git)
 hcol json session                 # the live session: DRIVEN_BY, IN_PROJECT, PROPOSES
 hcol json session --mode turns    # what each prompt produced, newest first,
                                   #   with token usage (in→out) per turn
-hcol json obj:<id> [--mode diff]  # descend: any target_id from session-stratum JSON
-                                  #   resolves in the next invocation (stable ids);
-                                  #   FILE ids don't — address files by path
+hcol search <term> [--type T]     # find nodes WITHOUT an address to start from:
+                                  #   name/path substring across every stratum; prints
+                                  #   "obj:id  Type  name  path" lines — feed to json
+hcol json obj:<id> [--mode diff]  # descend: any obj: id printed by search or by
+                                  #   session-stratum JSON resolves in the next
+                                  #   invocation (paths work for files too)
 hcol inspect <path>               # human-readable provenance/confidence detail
 ```
 

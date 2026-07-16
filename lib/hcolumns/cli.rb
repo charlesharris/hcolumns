@@ -26,6 +26,7 @@ module HColumns
       when "produce" then produce(@argv[0], @argv[1])
       when "bridge" then bridge
       when "serve" then serve(@argv.first)
+      when "search" then search(@argv.first)
       when "nodes" then list_nodes
       when "help", "-h", "--help" then help
       else
@@ -53,6 +54,8 @@ module HColumns
         when "--session" then opts[:session] = @argv.shift
         when "--mode" then opts[:mode] = @argv.shift
         when /\A--mode=(.+)/ then opts[:mode] = Regexp.last_match(1)
+        when "--type" then opts[:type] = @argv.shift
+        when /\A--type=(.+)/ then opts[:type] = Regexp.last_match(1)
         when /\A--log=(.+)/ then opts[:log] = Regexp.last_match(1)
         when /\A--session=(.+)/ then opts[:session] = Regexp.last_match(1)
         when /\A--(?:role|lens)=(.+)/ then opts[:role] = Regexp.last_match(1)
@@ -600,6 +603,30 @@ module HColumns
       end
     end
 
+    # `hcol search <term> [--type T]` — find nodes by name/path substring across
+    # every stratum of the cwd's composed graph. Prints one line per match:
+    # id, type, name, and the path when the node carries one — the id/path is
+    # what `hcol json` descends from (the agent skill's missing read).
+    def search(term)
+      if term.nil? || term.strip.empty?
+        warn "usage: hcol search <term> [--type Session|Bead|SourceFile|TestRun|…]"
+        return 1
+      end
+
+      workspace, root_id = directory_target(Dir.pwd)
+      fold_bridge_log(workspace, Dir.pwd, seam_root_id: root_id)
+      searcher = Searcher.new(workspace, now: now)
+      matches = searcher.find(term, from: root_id, type: @opts[:type])
+      matches.each do |node|
+        path = node.properties[:path]
+        suffix = path && path.to_s != node.name.to_s ? "  #{display_path(path.to_s)}" : ""
+        puts "#{node.id}  #{node.type}  #{node.name}#{suffix}"
+      end
+      warn "(node cap hit — the search did NOT cover everything; narrow with --type)" if searcher.capped?
+      warn "no nodes matching #{term.inspect}" if matches.empty?
+      matches.empty? ? 1 : 0
+    end
+
     # One-shot selectors into the REAL project, when the bridge's log is here:
     # `session` roots at the live session; an `obj:` id resolves into the
     # composed graph. Log-borne ids replay deterministically (same identity =>
@@ -619,9 +646,10 @@ module HColumns
     end
 
     # An obj: id beyond the log replay lives in the pull strata and only exists
-    # once its parent expands. Expand the root, then its first ring (the beads
-    # index -> its beads, branches -> commits), before giving up — deep file
-    # nodes are addressed by path instead, so two rings cover the real asks.
+    # once its parent expands. Cheap ladder: the root, then its first ring (the
+    # beads index -> its beads, branches -> commits), then — the same
+    # materialization `search` uses, so anything a search printed is
+    # addressable — the full capped expansion.
     def resolve_shallow(workspace, id)
       return id if workspace.node(id)
 
@@ -630,6 +658,9 @@ module HColumns
       return id if workspace.node(id)
 
       workspace.graph.edges_from(root_id).map(&:target_id).each { |nid| workspace.expand(nid, now: now) }
+      return id if workspace.node(id)
+
+      Searcher.new(workspace, now: now).expand_all(root_id)
       workspace.node(id) ? id : nil
     end
 
@@ -734,6 +765,9 @@ module HColumns
           hcol explore demo          the demo route (Task→change→files→test→log)
           hcol walk demo --live      watch the demo session's column grow
                                      (`session`/`sessions` still mean the demo where no bridge log exists)
+          hcol search <term>         find nodes by name/path substring across every stratum of
+                                     the cwd's composed graph (--type Bead|SourceFile|TestRun|…);
+                                     prints id · type · name · path — feed the id or path to json
           hcol inspect [node|path]   everything about a node: data, provenance, confidence math
           hcol json [node|path]      the node's panel + ranked modes as JSON (the web data contract)
                                      --mode M picks a tab (turns, diff, details, blame, …); with a
