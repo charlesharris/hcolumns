@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "json"
 require "fileutils"
 
 module HColumns
@@ -47,6 +48,9 @@ module HColumns
       # The pane must exist and Claude must be up before a paste means anything.
       BOOT_GRACE = 3.0
 
+      # How long to wait for a trust dialog we already know is coming.
+      TRUST_TIMEOUT = 20.0
+
       # Charris's call, and hugel3's: a permission prompt in a detached pane is
       # invisible — the session just wedges with no error, and the runner learns
       # nothing until its wall-clock timeout. hugel3 shipped the same default for
@@ -54,13 +58,42 @@ module HColumns
       # sessions with no visible error").
       #
       # This is a real trade-off, taken deliberately: the spawned agent can act
-      # unattended on the repo it is pointed at. Two things follow. Point it at a
-      # worktree when the task is not trusted (the seam allows it — `command:` and
-      # `root:` are both injectable). And note that this flag does NOT cover the
-      # workspace-trust dialog: hugel3 verified empirically that
-      # --permission-mode bypassPermissions does not auto-dismiss it, so a FIRST
-      # run in an unseen directory can still wedge on a dialog this does not touch.
+      # unattended on the repo it is pointed at. Point it at a worktree when the task
+      # is not trusted — the seam allows it (`command:` and `root:` are injectable).
+      # It does NOT cover the workspace-trust dialog; see TRUST_DIALOG below.
       DEFAULT_COMMAND = "claude --dangerously-skip-permissions"
+
+      # The workspace-trust dialog, which --dangerously-skip-permissions does NOT
+      # cover — verified live in an untrusted dir, not taken on faith (hugel3 found
+      # the same for --permission-mode bypassPermissions; it holds for this flag
+      # too). It is a numbered menu with option 1 pre-selected:
+      #
+      #     ❯ 1. Yes, I trust this folder
+      #       2. No, exit
+      #     Enter to confirm · Esc to cancel
+      #
+      # So the bypass is ONE Enter. Not `yes(1)`: that streams "y\n" at stdin, but
+      # a TUI reads raw keys from the tty and this menu wants Enter — and `yes`
+      # never stops, so after the dialog cleared it would type into the prompt box
+      # forever, submitting garbage.
+      TRUST_DIALOG = /Yes, I trust this folder/
+      TRUST_CONFIG = "~/.claude.json"
+
+      class << self
+        # Has Claude Code already been trusted here? A FACT, read from its own
+        # config — not a guess and not a screen-scrape. This is what makes the
+        # Enter below safe: we press it only when we already know a dialog is
+        # coming, so we are confirming an expectation rather than inferring state
+        # from pane bytes (the mistake that makes gastown's idle detection lie).
+        def trusted?(root, config: TRUST_CONFIG)
+          path = File.expand_path(config)
+          return true unless File.file?(path)
+
+          JSON.parse(File.read(path)).dig("projects", File.expand_path(root), "hasTrustDialogAccepted") == true
+        rescue JSON::ParserError, SystemCallError
+          false # can't tell → assume the dialog may appear; a wasted wait beats a wedge
+        end
+      end
 
       def initialize(root:, command: DEFAULT_COMMAND, tasks_dir: nil, hcol_bin: nil, clock: -> { Time.now })
         @root = File.expand_path(root)
@@ -81,7 +114,29 @@ module HColumns
         kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
         spawn(handle)
         handle.pane = resolve_pane(handle.session)
+        accept_trust(handle) unless self.class.trusted?(@root)
         handle
+      end
+
+      # Clear the first-run trust dialog. Deliberately NOT done by writing
+      # `hasTrustDialogAccepted` into ~/.claude.json: that file is 200KB+ of global
+      # state across every project, Claude Code writes it concurrently, and
+      # corrupting it would break every repo at once — gastown shipped an atomic
+      # settings.json write after exactly that class of bug. One keystroke into our
+      # own pane touches nothing outside this task.
+      #
+      # Bounded: if the dialog never shows we return and let the task proceed, so a
+      # renamed string costs a few seconds, not a hang.
+      def accept_trust(handle, timeout: TRUST_TIMEOUT, interval: 0.25, sleeper: ->(s) { sleep(s) })
+        waited = 0.0
+        until pane_shows?(handle, TRUST_DIALOG)
+          return false if waited >= timeout
+
+          sleeper.call(interval)
+          waited += interval
+        end
+        tmux("send-keys", "-t", handle.pane, "Enter") # option 1 is pre-selected
+        true
       end
 
       # Done when the spawned agent's own hook says so. `phase reviewing` is what
@@ -170,6 +225,11 @@ module HColumns
       def transcript_tail(handle, lines: 40)
         out, = tmux("capture-pane", "-p", "-J", "-t", handle.pane, "-S", "-#{lines}")
         out.to_s.lines.map(&:rstrip).reject(&:empty?).last(lines).join("\n")
+      end
+
+      def pane_shows?(handle, pattern)
+        out, = tmux("capture-pane", "-p", "-J", "-t", handle.pane)
+        out.to_s.match?(pattern)
       end
 
       def tmux(*args)
