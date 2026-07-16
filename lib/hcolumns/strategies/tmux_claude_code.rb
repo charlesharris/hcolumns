@@ -47,7 +47,22 @@ module HColumns
       # The pane must exist and Claude must be up before a paste means anything.
       BOOT_GRACE = 3.0
 
-      def initialize(root:, command: "claude", tasks_dir: nil, hcol_bin: nil, clock: -> { Time.now })
+      # Charris's call, and hugel3's: a permission prompt in a detached pane is
+      # invisible — the session just wedges with no error, and the runner learns
+      # nothing until its wall-clock timeout. hugel3 shipped the same default for
+      # the same reason ("silent permission prompts wedge interactive Claude
+      # sessions with no visible error").
+      #
+      # This is a real trade-off, taken deliberately: the spawned agent can act
+      # unattended on the repo it is pointed at. Two things follow. Point it at a
+      # worktree when the task is not trusted (the seam allows it — `command:` and
+      # `root:` are both injectable). And note that this flag does NOT cover the
+      # workspace-trust dialog: hugel3 verified empirically that
+      # --permission-mode bypassPermissions does not auto-dismiss it, so a FIRST
+      # run in an unseen directory can still wedge on a dialog this does not touch.
+      DEFAULT_COMMAND = "claude --dangerously-skip-permissions"
+
+      def initialize(root:, command: DEFAULT_COMMAND, tasks_dir: nil, hcol_bin: nil, clock: -> { Time.now })
         @root = File.expand_path(root)
         @command = command
         @tasks_dir = tasks_dir || File.join(@root, ".hcolumns", "tasks")

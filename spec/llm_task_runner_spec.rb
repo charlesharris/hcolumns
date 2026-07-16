@@ -99,6 +99,14 @@ RSpec.describe HColumns::LLMTaskRunner do
     expect(task_node.properties[:output].first).to include("timed out")
   end
 
+  # Charris's call (hc-4s4): a permission prompt in a DETACHED pane is invisible —
+  # the session wedges with no error and the runner learns nothing until its
+  # wall-clock fires. Pinned as a spec because it is a deliberate safety
+  # trade-off, not an incidental default: changing it should take saying so here.
+  it "launches the agent with permissions skipped, because a prompt in a detached pane is invisible" do
+    expect(HColumns::Strategies::TmuxClaudeCode::DEFAULT_COMMAND).to include("--dangerously-skip-permissions")
+  end
+
   it "runs several tasks concurrently and settles them all" do
     r = runner(echo(answers: { "a" => "first", "b" => "second" }))
     r.submit("one", key: "a")
