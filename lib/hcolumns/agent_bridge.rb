@@ -23,6 +23,9 @@ module HColumns
   #                            by cmd) re-emitted per state, latest fold wins — the
   #                            :phase pattern, so a live walk shows ◐ flip to ✓/✗
   #   log <text…>              an output/log line → LogLine the change EMITTED
+  #   task <key> <state> <text…>  an LLM task's lifecycle (pending/running/done/failed)
+  #                            → one digest-keyed LLMTask node re-emitted per state,
+  #                            latest fold wins — the `test` pattern (hc-4s4)
   #   request <key> <prompt…>  an INTENT, not an observation: someone wants a fix.
   #                            An external runner picks it up; the log only records
   #                            that it was asked for (hc-bnh).
@@ -66,6 +69,7 @@ module HColumns
       when "phase" then phase(rest)
       when "transcript" then transcript(rest)
       when "request" then request(rest)
+      when "task" then task(rest)
       when "test" then test(rest)
       when "usage" then usage(rest)
       when "log" then log_line(rest)
@@ -244,6 +248,35 @@ module HColumns
       run = test_node(cmd, spec)
       emit_node(run)
       emit_obs(change_node, run, :VERIFIED_BY, :behavior, "#{spec[:word]}: #{cmd}")
+    end
+
+    # `task <key> <state> <text…>` — an LLM task's lifecycle (hc-4s4), the TestRun
+    # pattern applied to a request we fired at a model: one digest-keyed node
+    # re-emitted per state, latest fold wins, so a live walk shows ◐ flip to ✓/✗
+    # in place. The runner is a separate process, so this stays stateless.
+    TASK_STATES = {
+      "pending" => { state: :pending, glyph: "◌", word: "queued" },
+      "running" => { state: :running, glyph: "◐", word: "running" },
+      "done" => { state: :done, glyph: "✓", word: "answered" },
+      "failed" => { state: :failed, glyph: "✗", word: "failed" }
+    }.freeze
+
+    def task(rest)
+      key, state, text = rest.to_s.strip.split(/\s+/, 3)
+      return if key.nil? || key.empty?
+
+      spec = TASK_STATES.fetch(state, TASK_STATES["pending"])
+      node = task_node(key, spec, text)
+      emit_node(node)
+      # :agent — a task is the agent's own account of what it was asked and answered,
+      # not a verifiable fact about the world.
+      emit_obs(change_node, node, :DISPATCHED, :agent, "#{spec[:word]}: #{key}")
+    end
+
+    def task_node(key, spec, text)
+      Node.new(type: :LLMTask, identity: { scheme: "agent.task", key: "#{@session}:#{key}" },
+               properties: { name: "#{spec[:glyph]} #{text.to_s.strip[0, 60]}", state: spec[:state],
+                             task_key: key, output: [text.to_s.strip] })
     end
 
     def test_node(cmd, spec)

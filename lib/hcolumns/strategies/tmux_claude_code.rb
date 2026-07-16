@@ -1,0 +1,168 @@
+# frozen_string_literal: true
+
+require "open3"
+require "fileutils"
+
+module HColumns
+  module Strategies
+    # Drive Claude Code in a tmux pane (hc-4s4). The default strategy, and the
+    # hügel lineage made explicit — hugel3 and gastown both did this, and they made
+    # OPPOSITE choices. Where they disagree, we follow hugel3, because gastown's
+    # own scar tissue is the argument for it.
+    #
+    # INPUT — bracketed paste from a file, never send-keys.
+    #   tmux load-buffer -b K file ; tmux paste-buffer -b K -t T -p -d ; send-keys T Enter
+    # hugel3: "keystroke injection via tmux is unreliable for multi-line input with
+    # backticks, quotes, and shell metachars; bracketed paste is the only reliable
+    # path for prompt CONTENT… it is the single biggest reason tmux+TUI looks
+    # flaky." Gastown took the other road and paid ~1100 lines for it: 512-byte
+    # chunking (the TTY line discipline truncates at 4096), a 600ms sleep to clear
+    # bash readline's keyseq-timeout so ESC isn't read as a meta-prefix, a Rewind-
+    # menu detector that re-sends the whole message when Escape triggers it, and a
+    # per-vendor Escape-poison matrix (Escape cancels generation in Gemini/Copilot).
+    # Bracketed paste makes nearly all of that unnecessary: the TUI takes the text
+    # as CONTENT, so multi-line stops meaning N submits.
+    #
+    # COMPLETION — an event, not a heuristic. Neither prior project had this, and
+    # it is the improvement. Gastown greps the pane for the literal string
+    # "esc to interrupt" — undocumented, cosmetic, version-fragile, and it lies
+    # often enough to need a two-consecutive-poll debounce ("during inter-tool-call
+    # gaps the prompt may briefly appear while Claude Code is still working").
+    # hugel3 refused to scrape and used a sentinel + result.json, which has its own
+    # trap: a fixed sentinel fires the moment you PASTE a prompt containing it.
+    # We use neither, because our spawned agent already carries the bridge hook:
+    # launched with HCOL_BRIDGE_LOG pointed at a task-scoped log, it REPORTS
+    # ITSELF, and the harness-enforced Stop hook is the completion signal. No
+    # scraping, no sentinel, no echo trap.
+    #
+    # A task-scoped log also dodges AgentBridge#adopt_spine, which recovers the
+    # session key from a log's FIRST Session node — a second agent appending to the
+    # shared log would hijack the existing spine instead of opening its own.
+    class TmuxClaudeCode
+      # Fixed geometry, straight from hugel3: "any fallback to pane-scraping is
+      # then deterministic."
+      WIDTH = 200
+      HEIGHT = 50
+
+      # The pane must exist and Claude must be up before a paste means anything.
+      BOOT_GRACE = 3.0
+
+      def initialize(root:, command: "claude", tasks_dir: nil, hcol_bin: nil, clock: -> { Time.now })
+        @root = File.expand_path(root)
+        @command = command
+        @tasks_dir = tasks_dir || File.join(@root, ".hcolumns", "tasks")
+        @hcol_bin = hcol_bin || "hcol"
+        @clock = clock
+      end
+
+      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, keyword_init: true)
+
+      def start(task)
+        FileUtils.mkdir_p(@tasks_dir)
+        handle = Handle.new(session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
+                            prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"), started_at: @clock.call)
+        File.write(handle.prompt_file, "#{task.prompt}\n")
+
+        kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
+        spawn(handle)
+        handle.pane = resolve_pane(handle.session)
+        handle
+      end
+
+      # Done when the spawned agent's own hook says so. `phase reviewing` is what
+      # the Stop hook emits — harness-enforced, so it cannot be fooled by a
+      # cosmetic string or by the prompt echoing itself.
+      def poll(handle)
+        return { status: :failed, response: "tmux session #{handle.session} vanished" } unless alive?(handle.session)
+        return :running unless File.file?(handle.log)
+
+        return :running unless finished?(handle.log)
+
+        { status: :done, response: transcript_tail(handle) }
+      end
+
+      # Best-effort teardown. Orphan panes are a documented plague in both prior
+      # projects (gastown ships a reconciler AND a process-tree reaper because the
+      # agent ignores SIGHUP; hugel3 reaps in terminate/2 "so an abnormal exit
+      # doesn't leak orphan panes").
+      def stop(handle)
+        kill(handle.session) if handle
+      end
+
+      # The prompt delivery hugel3 arrived at, kept together so it reads as one
+      # protocol. `-p` is bracketed paste; `-d` deletes the buffer after; Enter is
+      # a SEPARATE keystroke, because it is the submit, not part of the content.
+      def deliver(handle)
+        buffer = "hcol-#{handle.session}"
+        tmux("load-buffer", "-b", buffer, handle.prompt_file)
+        tmux("paste-buffer", "-b", buffer, "-t", handle.pane, "-p", "-d")
+        tmux("send-keys", "-t", handle.pane, "Enter")
+      end
+
+      private
+
+      def session_name(key)
+        # No dots or colons: tmux reads those as target syntax (gastown validates
+        # against exactly this).
+        "hcol-#{key}".gsub(/[^a-zA-Z0-9_-]/, "-")
+      end
+
+      # -e passes the environment in, which is the whole trick: the spawned agent's
+      # bridge hook writes to THIS task's log, so its work comes back structured
+      # instead of scraped.
+      def spawn(handle)
+        tmux("new-session", "-d", "-s", handle.session, "-x", WIDTH.to_s, "-y", HEIGHT.to_s,
+             "-c", @root, "-e", "HCOL_BRIDGE_LOG=#{handle.log}", "-e", "HCOL_BIN=#{@hcol_bin}",
+             @command)
+      end
+
+      # Address the PANE explicitly, never the bare session name: gastown found
+      # that `send-keys -t <session>` goes to whatever pane the human last clicked.
+      def resolve_pane(session)
+        out, = tmux("list-panes", "-t", session, "-F", "\#{session_name}:\#{window_index}.\#{pane_index}")
+        out.to_s.lines.first&.strip || session
+      end
+
+      def alive?(session)
+        _out, _err, status = Open3.capture3("tmux", "has-session", "-t", session)
+        status.success?
+      end
+
+      def kill(session)
+        Open3.capture3("tmux", "kill-session", "-t", session)
+      end
+
+      # The Stop hook's `phase reviewing`, or an explicit eof — a one-shot task log
+      # is exactly the stream where `done` is legitimate.
+      def finished?(log)
+        File.foreach(log).any? do |line|
+          parsed = begin
+            Persistence.parse_line(line)
+          rescue StandardError
+            nil
+          end
+          parsed == :eof ||
+            (parsed.is_a?(Hash) && parsed[:kind] == :node &&
+             parsed[:payload].respond_to?(:properties) &&
+             parsed[:payload].properties[:phase] == :reviewing)
+        end
+      end
+
+      # The human-readable answer. The STRUCTURE comes back through the task log
+      # (turns, edits, TestRuns); this is only the prose, and it is explicitly the
+      # lossy channel — capture-pane renders the visible pane, so anything that
+      # scrolled past is gone. -J joins wrapped lines.
+      def transcript_tail(handle, lines: 40)
+        out, = tmux("capture-pane", "-p", "-J", "-t", handle.pane, "-S", "-#{lines}")
+        out.to_s.lines.map(&:rstrip).reject(&:empty?).last(lines).join("\n")
+      end
+
+      def tmux(*args)
+        out, err, status = Open3.capture3("tmux", *args)
+        raise "tmux #{args.first} failed: #{err.strip}" unless status.success?
+
+        [out, err]
+      end
+    end
+  end
+end
