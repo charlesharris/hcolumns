@@ -74,16 +74,23 @@ end
 def report_usage(path)
   return unless path && File.readable?(path)
 
-  slice = []
+  # ONE API response is written as SEVERAL transcript entries — one per content
+  # block (thinking, text, each tool_use) — and every one of them repeats that
+  # response's usage verbatim. Summing per entry therefore multiplied the totals
+  # by however many blocks the reply happened to have (~2.2x measured: 539
+  # entries carrying only 247 distinct message ids). `message.id` is the API
+  # response's identity, so dedupe on it.
+  slice = {}
   File.foreach(path) do |line|
     entry = JSON.parse(line) rescue next
     if human_prompt?(entry)
-      slice = [] # a new turn's slice begins
+      slice = {} # a new turn's slice begins
     elsif entry["type"] == "assistant" && !entry["isSidechain"] && (usage = entry.dig("message", "usage"))
-      slice << usage
+      slice[entry.dig("message", "id") || entry["uuid"]] = usage
     end
   end
   return if slice.empty?
+  slice = slice.values
 
   totals = Hash.new(0)
   slice.each do |usage|

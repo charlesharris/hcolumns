@@ -25,9 +25,12 @@ RSpec.describe HColumns::Providers::Transcript do
     File.write(@path, entries.map { |e| JSON.generate(e) }.join("\n"))
   end
 
-  def assistant(*blocks, usage: true)
+  # One API response = one message id. Claude Code writes each content block as
+  # its own entry, all repeating that response's id and usage.
+  def assistant(*blocks, usage: true, id: nil)
+    message = { "content" => blocks, "id" => id || "msg_#{blocks.object_id}" }
     { "type" => "assistant",
-      "message" => { "content" => blocks }.merge(usage ? { "usage" => { "output_tokens" => 1 } } : {}) }
+      "message" => message.merge(usage ? { "usage" => { "output_tokens" => 1 } } : {}) }
   end
 
   def user(*blocks) = { "type" => "user", "message" => { "content" => blocks } }
@@ -161,6 +164,26 @@ RSpec.describe HColumns::Providers::Transcript do
     graph, node = graph_with(@path)
 
     expect(blocks_of(graph, node).size).to eq(1)
+  end
+
+  # A turn is one API ROUND-TRIP, not one transcript entry. Claude Code writes a
+  # single response as several entries — one per content block — each repeating
+  # that response's usage AND its message id. Counting entries inflated residency
+  # by however many blocks a reply happened to have: measured 2.1x across our own
+  # 12 sessions (4133 entry-"turns" for 1931 real round-trips), which also made
+  # the shipped token headline overstate by the same factor.
+  it "counts one turn per API round-trip, not per transcript entry" do
+    write_transcript(
+      assistant(thinking("a"), id: "msg_1"),   # the SAME response, written as
+      assistant({ "type" => "text", "text" => "b" }, id: "msg_1"), # three entries
+      assistant(tool_use("t1", "Read", { "file_path" => "/x/y.rb" }), id: "msg_1"),
+      assistant(thinking("second"), id: "msg_2")
+    )
+    graph, node = graph_with(@path)
+
+    # 2 round-trips, so the first response's blocks are resident for exactly 1 turn.
+    expect(blocks_of(graph, node).map { |b| b.properties[:turn] }.uniq.sort).to eq([1, 2])
+    expect(blocks_of(graph, node).find { |b| b.properties[:turn] == 1 }.properties[:resident]).to eq(1)
   end
 
   # A subagent's blocks never entered THIS session's context, so billing them here

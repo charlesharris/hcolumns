@@ -161,8 +161,18 @@ module HColumns
           blocks = []
           calls = {}
           turn = 0
+          seen = nil
           each_entry(path) do |entry, line_no|
-            turn += 1 if entry["type"] == "assistant" && entry.dig("message", "usage")
+            # A turn is one API ROUND-TRIP, not one transcript entry: a single
+            # response is written as several entries (one per content block), each
+            # repeating the same usage and the same message id. Counting entries
+            # inflated residency by however many blocks a reply happened to have
+            # (~2.2x measured). message.id is the response's identity.
+            id = entry.dig("message", "id")
+            if entry["type"] == "assistant" && entry.dig("message", "usage") && id != seen
+              turn += 1
+              seen = id
+            end
             next if entry["isSidechain"]
 
             Array(entry.dig("message", "content")).each_with_index do |block, index|
