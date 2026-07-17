@@ -255,18 +255,27 @@ module HColumns
     # too, so nothing looks outstanding and nothing re-fires.
     def run_requests
       workspace, _root = composed_target(Dir.pwd, root: :session)
+      runner = LLMTaskRunner.new(strategy: run_strategy, log: bridge_log(Dir.pwd),
+                                 session: @opts[:session] || "live")
+
+      # Settle anything a prior `hcol run` left stranded when its shell died, and reap
+      # the panes of already-finished tasks, before taking on new work.
+      recovered = runner.reconcile(workspace.graph)
+      puts "recovered #{recovered} stranded task#{recovered == 1 ? '' : 's'} from a prior run" if recovered.positive?
+
       pending = LLMTaskRunner.outstanding(workspace.graph)
-      if pending.empty?
+      if pending.empty? && runner.tasks.empty?
         puts "nothing outstanding. (`hcol fix <suggestion>` or `hcol ask \"…\"` queues work.)"
         return 0
       end
 
-      runner = LLMTaskRunner.new(strategy: run_strategy, log: bridge_log(Dir.pwd),
-                                 session: @opts[:session] || "live")
-      puts "#{pending.size} outstanding request#{pending.size == 1 ? '' : 's'}:"
-      pending.each { |r| puts "  · #{r.properties[:kind]}: #{r.properties[:prompt].to_s[0, 62]}" }
-      runner.submit_outstanding(workspace.graph)
-      puts "\ndispatched. watch them in `hcol serve .` — each task flips ◌ → ◐ → ✓ in place."
+      unless pending.empty?
+        puts "#{pending.size} outstanding request#{pending.size == 1 ? '' : 's'}:"
+        pending.each { |r| puts "  · #{r.properties[:kind]}: #{r.properties[:prompt].to_s[0, 62]}" }
+        runner.submit_outstanding(workspace.graph)
+        puts "\ndispatched. watch them in `hcol serve .` — each task flips ◌ → ◐ → ✓ in place."
+      end
+
       runner.run_to_completion(timeout: (@opts[:timeout] || 600).to_i)
       runner.tasks.each_value { |t| puts "  #{t.state == :done ? '✓' : '✗'} #{t.prompt.to_s[0, 62]}" }
       0

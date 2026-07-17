@@ -100,6 +100,42 @@ module HColumns
       graph.nodes.select { |n| n.type == :Request && !dispatched.include?(n.id) }
     end
 
+    # Reconcile the graph against the world before taking on new work (hc-4s4). A
+    # runner dies with its shell — SIGHUP'd when the terminal closes — while the
+    # agents it spawned keep working in detached panes and finish on disk with nobody
+    # left to read them. Because the log is truth, the answer is not to daemonize but
+    # to RECONCILE: re-adopt every task the graph still shows in flight so the normal
+    # poll loop settles it (finished→done even if the pane has since closed,
+    # dead→failed, still-working→driven to completion), and reap the panes of tasks
+    # already terminal. Idempotent — two runners reconciling the same task fold the
+    # same latest-wins node — so it stays safe under the multi-process model.
+    #
+    # A strategy without adopt/reap_orphans (the Echo double) simply has nothing to
+    # recover, so this is a no-op there. Returns the count re-adopted, for a caller
+    # to report.
+    def reconcile(graph)
+      return 0 unless @strategy.respond_to?(:adopt)
+
+      llm_tasks = graph.nodes.select { |n| n.type == :LLMTask }
+      adopted = llm_tasks.count do |node|
+        key = node.properties[:task_key]
+        next false if key.nil? || @tasks.key?(key) || %i[done failed].include?(node.properties[:state])
+
+        @tasks[key] = Task.new(key: key, prompt: node.properties[:output]&.first,
+                               handle: @strategy.adopt(key), state: :running,
+                               request_id: node.properties[:request_id])
+        true
+      end
+
+      if @strategy.respond_to?(:reap_orphans)
+        terminal = llm_tasks.select { |n| %i[done failed].include?(n.properties[:state]) }
+                            .filter_map { |n| n.properties[:task_key] }
+        @strategy.reap_orphans(terminal) unless terminal.empty?
+      end
+
+      adopted
+    end
+
     # Submit every outstanding request. Returns the keys started.
     def submit_outstanding(graph)
       self.class.outstanding(graph).map do |request|

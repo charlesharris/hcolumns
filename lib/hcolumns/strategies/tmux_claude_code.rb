@@ -202,6 +202,14 @@ module HColumns
       # cosmetic string or by the prompt echoing itself. Verified against a real
       # agent: the hook fired ~4s after it answered.
       def poll(handle)
+        # Finished-on-disk wins over a vanished pane. A task this runner ADOPTED after
+        # a restart may have completed and had its pane close before we looked — the
+        # answer is still on disk, so read it back rather than mourn it as a failure.
+        # Checking this first is what lets `hcol run` survive its own shell.
+        if handle.delivered && File.file?(handle.log) && finished?(handle.log)
+          return { status: :done, response: answer(handle) }
+        end
+
         return { status: :failed, response: "tmux session #{handle.session} vanished" } unless alive?(handle.session)
 
         unless handle.delivered
@@ -213,13 +221,26 @@ module HColumns
           return :running
         end
 
-        return { status: :done, response: transcript_tail(handle) } if File.file?(handle.log) && finished?(handle.log)
-
         if stalled?(handle, now: @clock.call, log_size: log_size(handle), activity_at: pane_activity_at(handle))
           return { status: :failed, response: stall_message }
         end
 
         :running
+      end
+
+      # Rebuild the handle for a task a PREVIOUS runner started, so this one can poll
+      # it to a conclusion (hc-4s4). Everything the handle needs is deterministic from
+      # the key — the session name and the task-log path both derive from it, which
+      # was the whole point of keying them off it. Marked delivered: an in-flight task
+      # was pasted long ago, and re-delivering would inject the prompt a second time.
+      def adopt(key)
+        session = session_name(key)
+        handle = Handle.new(session: session, log: File.join(@tasks_dir, "#{key}.jsonl"),
+                            prompt_file: File.join(@tasks_dir, "#{key}.prompt"),
+                            started_at: @clock.call, delivered: true, last_size: 0,
+                            last_progress_at: @clock.call)
+        handle.pane = resolve_pane(session) if alive?(session)
+        handle
       end
 
       # Bookkeep progress and report whether the task has gone quiet past the floor.
@@ -250,6 +271,20 @@ module HColumns
         pid = pane_pid(handle) # before kill-session, while the pane still exists to ask
         kill(handle.session)
         reap_tree(pid) if pid
+      end
+
+      # Reap the panes of tasks the graph already calls terminal (hc-4s4). A done or
+      # failed task whose hcol-<key> session is still alive is a leak — the prior
+      # runner died between recording the outcome and tearing the pane down.
+      # Conservative by construction: only sessions for PROVABLY finished tasks are
+      # touched, never one a concurrent live runner might still own (that runner's own
+      # stall detector reaps its wedged case). A truly orphaned pane with no graph
+      # record is left alone rather than risk killing a session mid-flight.
+      def reap_orphans(terminal_keys)
+        terminal_keys.each do |key|
+          session = session_name(key)
+          stop(Handle.new(session: session)) if alive?(session)
+        end
       end
 
       # SIGKILL a pid and every descendant, leaves first so a parent can't reparent a
@@ -370,6 +405,13 @@ module HColumns
              parsed[:payload].respond_to?(:properties) &&
              parsed[:payload].properties[:phase] == :reviewing)
         end
+      end
+
+      # The prose answer, resilient to a pane that has already closed (an adopted task
+      # whose original runner died). A live pane gives the rich tail; a gone one falls
+      # back to a pointer at the task log, which carries the real STRUCTURE regardless.
+      def answer(handle)
+        alive?(handle.session) ? transcript_tail(handle) : "completed — pane already closed; work is in #{handle.log}"
       end
 
       # The human-readable answer. The STRUCTURE comes back through the task log

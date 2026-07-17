@@ -107,6 +107,57 @@ RSpec.describe HColumns::LLMTaskRunner do
     expect(HColumns::Strategies::TmuxClaudeCode::DEFAULT_COMMAND).to include("--dangerously-skip-permissions")
   end
 
+  # Surviving the shell (hc-4s4): a runner dies with its terminal, but the agents it
+  # spawned keep working in detached panes and finish on disk. The NEXT `hcol run`
+  # reconciles — re-adopts what's still in flight and settles it, reaps what's done.
+  describe "reconciling a prior run's stranded tasks" do
+    # Stands in for the panes a dead runner left behind: adopt() rebuilds a handle
+    # from the key, poll() reports whatever the disk now says, reap_orphans() records
+    # which sessions it was asked to kill.
+    def recovering_strategy(results: {}, reaped: [])
+      strat = Object.new
+      strat.instance_variable_set(:@results, results)
+      strat.instance_variable_set(:@reaped, reaped)
+      def strat.start(task) = task.key
+      def strat.adopt(key) = key
+      def strat.poll(handle) = @results.fetch(handle, :running)
+      def strat.stop(_handle) = nil
+      def strat.reap_orphans(keys) = @reaped.concat(keys)
+      strat
+    end
+
+    it "re-adopts an in-flight task the previous runner never finished, and drives it home" do
+      # First runner leaves t1 running and 'dies' — never polled to completion.
+      runner(echo(never_finish: ["t1"])).submit("summarize the tuner", key: "t1")
+      expect(task_node.properties[:state]).to eq(:running)
+
+      # A fresh runner reconciles the graph and settles the adopted task.
+      r2 = runner(recovering_strategy(results: { "t1" => { status: :done, response: "the tuner scores edges" } }))
+      expect(r2.reconcile(graph)).to eq(1)
+      r2.run_to_completion(timeout: 5, interval: 0.1, sleeper: ->(_s) {})
+
+      expect(task_node.properties[:state]).to eq(:done)
+      expect(task_node.properties[:output].first).to include("the tuner scores edges")
+    end
+
+    it "does not re-adopt a task that already finished, but reaps its leaked pane" do
+      r = runner(echo(answers: { "t1" => "already answered" }))
+      r.submit("q", key: "t1")
+      r.poll # → done
+      expect(task_node.properties[:state]).to eq(:done)
+
+      reaped = []
+      r2 = runner(recovering_strategy(reaped: reaped))
+      expect(r2.reconcile(graph)).to eq(0)   # nothing in flight to adopt…
+      expect(reaped).to eq(["t1"])           # …but the terminal task's pane is reaped
+    end
+
+    it "is a no-op for a strategy that cannot recover (the Echo double)" do
+      runner(echo(never_finish: ["t1"])).submit("hangs", key: "t1")
+      expect(runner(echo).reconcile(graph)).to eq(0)
+    end
+  end
+
   it "runs several tasks concurrently and settles them all" do
     r = runner(echo(answers: { "a" => "first", "b" => "second" }))
     r.submit("one", key: "a")
