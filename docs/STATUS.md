@@ -1,13 +1,19 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-17 · **Branch:** `main` (through 33e) · **Tests:** 333 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-17 · **Branch:** `hc-ui-dispatch` (34a; off `main` at 33e) · **Tests:** 345 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed on `main`** (working tree clean, 333 ex green) through 33e — hc-4s4's four
-> robustness gaps closed (33b/33c), the durable pipe-pane output channel landed (33d), and user-initiated
-> `hcol retry` (33e). **Resume at [§8](#8-next-up--open-threads).**
+> ✅ **All work is committed** (working tree clean, 345 ex green). `main` holds through **33e** (hc-4s4's
+> runner robustness fully closed: stall detector, tree-reaping stop, reconcile/survive-the-shell,
+> durable pipe-pane output, user-initiated `hcol retry`). The branch **`hc-ui-dispatch`** holds **34a**
+> — Phase A of the UI-dispatch hop (queue a Request from the browser), NOT yet merged.
+>
+> **▶ RESUME HERE:** Phase B of the UI-dispatch hop — execute a queued dispatch, opt-in and
+> worktree-isolated. The full plan, with the decisions already locked *with* Charris, is the
+> **Dispatch from the UI** bullet in [§8](#8-next-up--open-threads). Merge `hc-ui-dispatch` to `main`
+> once Phase B lands (or sooner — Phase A is a coherent, shippable increment on its own).
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
