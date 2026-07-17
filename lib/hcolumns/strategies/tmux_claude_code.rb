@@ -39,6 +39,23 @@ module HColumns
     # A task-scoped log also dodges AgentBridge#adopt_spine, which recovers the
     # session key from a log's FIRST Session node — a second agent appending to the
     # shared log would hijack the existing spine instead of opening its own.
+    #
+    # STALL — the completion event is what a HEALTHY task emits; a wedged one emits
+    # nothing (it stops to ask an interactive question and sits there), and absence
+    # of a signal is not itself a signal. So we need a liveness notion — but NOT
+    # gastown's `esc to interrupt` grep, which is a content-scrape that lies. We
+    # watch two TIMESTAMPS instead, either of which advancing counts as progress:
+    #   1. the task log's SIZE — a hook fired (an edit, a test), definitive work; and
+    #   2. tmux's own `window_activity` — bumped whenever the pane redraws, which
+    #      the Claude TUI does continuously while it works (the spinner animates, the
+    #      `esc to interrupt` elapsed counter ticks). Verified in tmux 3.6a: frozen
+    #      during genuine silence, advancing under output. It's a timestamp tmux
+    #      maintains, same category as file mtime — not a scrape of pane CONTENT.
+    # The log alone is too sparse (Read/Grep and non-test Bash emit nothing to it),
+    # so window_activity is the finer signal; the log is the high-value one. Quiet on
+    # BOTH for STALL_TIMEOUT ⇒ failed, fast, instead of waiting out the runner's
+    # whole wall-clock. This is the stall detector the readiness bug would have been
+    # caught by.
     class TmuxClaudeCode
       # Fixed geometry, straight from hugel3: "any fallback to pane-scraping is
       # then deterministic."
@@ -50,6 +67,15 @@ module HColumns
 
       # How long to wait for a trust dialog we already know is coming.
       TRUST_TIMEOUT = 20.0
+
+      # No progress on EITHER the task log or the pane's redraw clock for this long
+      # ⇒ the task is wedged (almost always waiting on input it will never get).
+      # Generous on purpose: a long reasoning turn or a silent non-test build emits
+      # nothing to the log, and window_activity is what covers those — but if tmux
+      # ever declines the timestamp, the log-only fallback must not trip on honest
+      # thinking. It's a floor, not the backstop: the runner's own wall-clock still
+      # bounds the total. Failing at 120s beats failing at 600.
+      STALL_TIMEOUT = 120.0
 
       # Charris's call, and hugel3's: a permission prompt in a detached pane is
       # invisible — the session just wedges with no error, and the runner learns
@@ -126,13 +152,14 @@ module HColumns
         out.match?(READY_PROMPT) && !out.match?(TRUST_DIALOG)
       end
 
-      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, :delivered, keyword_init: true)
+      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, :delivered,
+                          :last_progress_at, :last_size, :last_activity, keyword_init: true)
 
       def start(task)
         FileUtils.mkdir_p(@tasks_dir)
         handle = Handle.new(session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
                             prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"),
-                            started_at: @clock.call, delivered: false)
+                            started_at: @clock.call, delivered: false, last_size: 0)
         File.write(handle.prompt_file, "#{task.prompt}\n")
 
         kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
@@ -182,20 +209,73 @@ module HColumns
 
           deliver(handle)
           handle.delivered = true
+          handle.last_progress_at = @clock.call # start the stall clock at delivery, not boot
           return :running
         end
 
-        return :running unless File.file?(handle.log) && finished?(handle.log)
+        return { status: :done, response: transcript_tail(handle) } if File.file?(handle.log) && finished?(handle.log)
 
-        { status: :done, response: transcript_tail(handle) }
+        if stalled?(handle, now: @clock.call, log_size: log_size(handle), activity_at: pane_activity_at(handle))
+          return { status: :failed, response: stall_message }
+        end
+
+        :running
       end
 
-      # Best-effort teardown. Orphan panes are a documented plague in both prior
-      # projects (gastown ships a reconciler AND a process-tree reaper because the
-      # agent ignores SIGHUP; hugel3 reaps in terminate/2 "so an abnormal exit
-      # doesn't leak orphan panes").
+      # Bookkeep progress and report whether the task has gone quiet past the floor.
+      # Pure given the two readings, so the whole stall policy is testable without a
+      # pane: pass a fake clock and synthetic log_size/activity_at. Either the log
+      # growing (real work) or window_activity advancing (the pane redrawing) resets
+      # the clock; quiet on both for `timeout` ⇒ stalled.
+      def stalled?(handle, now:, log_size:, activity_at:, timeout: STALL_TIMEOUT)
+        grew   = log_size > handle.last_size.to_i
+        redrew = activity_at && handle.last_activity && activity_at > handle.last_activity
+        handle.last_size = log_size if grew
+        handle.last_activity = activity_at if activity_at
+        handle.last_progress_at = now if grew || redrew || handle.last_progress_at.nil?
+        (now - handle.last_progress_at) >= timeout
+      end
+
+      # Best-effort teardown, and a real one. Orphan panes are a documented plague in
+      # both prior projects (gastown ships a reconciler AND a process-tree reaper
+      # because the agent ignores SIGHUP; hugel3 reaps in terminate/2 "so an abnormal
+      # exit doesn't leak orphan panes"). `kill-session` SIGHUPs the pane's process
+      # group and removes the pane — but the agent is exactly the process that
+      # ignores SIGHUP, so its node/child processes survive detached. So we capture
+      # the pane's pid FIRST, kill the session, then SIGKILL anything left in that
+      # tree. Every step is best-effort: teardown must never raise into the runner.
       def stop(handle)
-        kill(handle.session) if handle
+        return unless handle
+
+        pid = pane_pid(handle) # before kill-session, while the pane still exists to ask
+        kill(handle.session)
+        reap_tree(pid) if pid
+      end
+
+      # SIGKILL a pid and every descendant, leaves first so a parent can't reparent a
+      # child onto init before we reach it. `children_of` is injected so the tree
+      # walk is testable without real processes.
+      def reap_tree(pid, children_of: method(:child_pids))
+        descendants(pid, children_of).reverse_each do |p|
+          Process.kill("KILL", p)
+        rescue Errno::ESRCH, Errno::EPERM
+          nil # already gone, or not ours — either way, nothing to reap
+        end
+      end
+
+      # A pid and all its descendants, parents-before-children (DFS). Pure given
+      # `children_of`; the caller reverses it to kill leaves first.
+      def descendants(pid, children_of)
+        seen = []
+        stack = [pid]
+        until stack.empty?
+          current = stack.pop
+          next if seen.include?(current)
+
+          seen << current
+          stack.concat(children_of.call(current))
+        end
+        seen
       end
 
       # The prompt delivery hugel3 arrived at, kept together so it reads as one
@@ -235,6 +315,41 @@ module HColumns
       def alive?(session)
         _out, _err, status = Open3.capture3("tmux", "has-session", "-t", session)
         status.success?
+      end
+
+      def stall_message(timeout = STALL_TIMEOUT)
+        "stalled: no output and no logged work for #{timeout.to_i}s (pane idle — likely waiting on input)"
+      end
+
+      def log_size(handle)
+        File.file?(handle.log) ? File.size(handle.log) : 0
+      end
+
+      # tmux's last-redraw timestamp for the pane's window (epoch seconds), or nil if
+      # the build/pane won't give one — in which case the log is the only heartbeat.
+      # A single-window session, so window_activity IS this pane's activity.
+      def pane_activity_at(handle)
+        out, = tmux("display-message", "-p", "-t", handle.pane, "\#{window_activity}")
+        text = out.to_s.strip
+        text.empty? ? nil : Integer(text)
+      rescue StandardError
+        nil
+      end
+
+      # The pane's foreground pid — the root of the tree stop() reaps.
+      def pane_pid(handle)
+        out, = tmux("list-panes", "-t", handle.session, "-F", "\#{pane_pid}")
+        text = out.to_s.lines.first&.strip
+        text && !text.empty? ? Integer(text) : nil
+      rescue StandardError
+        nil
+      end
+
+      def child_pids(pid)
+        out, _err, status = Open3.capture3("pgrep", "-P", pid.to_s)
+        status.success? ? out.split.map { |s| Integer(s) } : []
+      rescue StandardError
+        []
       end
 
       def kill(session)
