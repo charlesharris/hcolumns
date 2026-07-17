@@ -585,8 +585,12 @@ module HColumns
         # under the Refreshing lock (and once here, before threads exist).
         @now = nil
         workspace, start, feed, session = composed_target(dir, root: root)
+        # A dispatcher only when there's a bridge log to queue onto — a click can then
+        # append a Request the tailing serve shows live (the UI echo of ask/fix).
+        log = bridge_log(dir)
+        dispatcher = Dispatcher.new(log: log, session: session || "live") if File.exist?(log)
         Web::App.new(workspace: workspace, root_id: start, now: now,
-                     session: session, feed: feed)
+                     session: session, feed: feed, dispatcher: dispatcher)
       end
       apps = Web::AppSource::Refreshing.new(build, probe: project_probe(dir))
       Web::Server.new(apps: apps, streaming: true, port: @opts[:port] || 4567)

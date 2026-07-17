@@ -37,6 +37,19 @@ RSpec.describe HColumns::Web::AppSource do
     expect(app.panel(orders_id, mode: "details")[:mode]).to eq("details")
   end
 
+  # A fixed allow-list backs both wrappers, so a new App method (dispatch/ask) is
+  # invisible through them until added — the bug that made the ask box never show.
+  # Pin that the dispatch surface is forwarded, not swallowed.
+  it "forwards the dispatch surface (dispatch/ask/available?) through both wrappers" do
+    %i[dispatch_available? dispatch ask].each do |method|
+      expect(described_class::Locked::LockedApp::APP_API).to include(method)
+      expect(described_class::Refreshing::SwappingApp::DELEGATED).to include(method)
+    end
+    locked = described_class::Locked.new(fresh_app).checkout
+    expect(locked.dispatch_available?).to be(false)  # no dispatcher on this app, but the method answers
+    expect(locked.ask("hi")).to be_nil               # …and delegates rather than NoMethodError
+  end
+
   it "Locked serializes concurrent panel builds without error (threaded server)" do
     app = described_class::Locked.new(fresh_app).checkout
     panels = Array.new(8) { Thread.new { app.panel(orders_id) } }.map(&:value)

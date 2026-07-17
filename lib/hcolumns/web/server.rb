@@ -39,6 +39,7 @@ module HColumns
         sample = @apps.checkout # a representative app for the shell (root id + flags)
         @root_id = sample.root_id
         @live = sample.live?
+        @dispatch = sample.respond_to?(:dispatch_available?) && sample.dispatch_available?
       end
 
       def live?
@@ -67,6 +68,13 @@ module HColumns
           id = query["id"]
           json_response(id && app.flag(id, query["level"]),
                         missing: { error: "no such node or level", id: id })
+        when "/dispatch"
+          id = query["id"]
+          json_response(id && app.dispatch(id),
+                        missing: { error: "no such suggestion, no fix to hand off, or dispatch unavailable", id: id })
+        when "/ask"
+          json_response(app.ask(query["prompt"]),
+                        missing: { error: "empty prompt or dispatch unavailable" })
         else
           [404, "text/plain", "not found\n"]
         end
@@ -172,6 +180,7 @@ module HColumns
         INDEX_HTML.sub("__ROOT_ID__", @root_id.to_s)
                   .sub("__LIVE__", @live.to_s)
                   .sub("__STREAM__", @streaming.to_s)
+                  .sub("__DISPATCH__", @dispatch.to_s)
       end
 
       # The whole client, inline. Single-quoted heredoc so the JS `${}` template
@@ -224,6 +233,24 @@ module HColumns
           }
           .tab:hover { border-color: #58a6ff; color: #c9d1d9; }
           .tab.active { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
+          .act {
+            display: inline-block; margin: 6px 12px 0; cursor: pointer;
+            padding: 2px 10px; border-radius: 10px; font-size: 11px;
+            border: 1px solid #2ea04366; color: #3fb950; background: #2ea04314;
+          }
+          .act:hover { border-color: #3fb950; background: #2ea04326; }
+          .act.busy { opacity: .5; cursor: default; }
+          .ask { display: inline-flex; gap: 6px; margin-left: 12px; vertical-align: middle; }
+          .ask input {
+            width: 22em; padding: 2px 8px; font: inherit; color: #c9d1d9;
+            background: #0f1116; border: 1px solid #30363d; border-radius: 10px;
+          }
+          .ask input:focus { outline: none; border-color: #58a6ff; }
+          .ask button {
+            padding: 2px 10px; font: inherit; font-size: 11px; cursor: pointer;
+            color: #3fb950; background: #2ea04314; border: 1px solid #2ea04366; border-radius: 10px;
+          }
+          .ask button:hover { border-color: #3fb950; }
           .sec-head {
             padding: 8px 12px 2px; color: #f0883e; font-size: 11px;
             text-transform: uppercase; letter-spacing: .04em;
@@ -259,13 +286,14 @@ module HColumns
         </style>
         </head>
         <body>
-        <header><b>hcolumns</b> — click an item to descend · tabs are the node's modes<span id="livebadge"></span></header>
+        <header><b>hcolumns</b> — click an item to descend · tabs are the node's modes<span id="livebadge"></span><span id="askbox"></span></header>
         <div id="board"></div>
         <pre id="dock"></pre>
         <script>
         const ROOT_ID = "__ROOT_ID__";
         const LIVE = __LIVE__;
         const STREAM = __STREAM__;
+        const DISPATCH = __DISPATCH__; // a bridge log is here — clicks can queue work
         const board = document.getElementById('board');
         const dock = document.getElementById('dock');
         const columns = []; // {id, mode} per open column, parallel to board.children
@@ -323,6 +351,38 @@ module HColumns
           if (r.ok) refreshOpen();
         });
 
+        // Queue work: hit a dispatch URL, then refresh the open columns so the new
+        // Request node shows immediately. Guards against a double-click while in
+        // flight. The button (or ask input) is passed so it can show a busy state.
+        async function queue(el, url) {
+          if (el.classList.contains('busy')) return;
+          el.classList.add('busy');
+          try {
+            const r = await fetch(url);
+            if (r.ok) { liveVersion = -1; await refreshOpen(); }
+          } finally {
+            el.classList.remove('busy');
+          }
+        }
+
+        // The ask box (only when a bridge log is here): queue an arbitrary prompt,
+        // the browser echo of `hcol ask`. Enter or the button submits.
+        function initAsk() {
+          if (!DISPATCH) return;
+          const box = document.getElementById('askbox');
+          box.className = 'ask';
+          box.innerHTML = '<input placeholder="ask… (queues a request)"><button>queue</button>';
+          const input = box.querySelector('input');
+          const submit = async () => {
+            const prompt = input.value.trim();
+            if (!prompt) return;
+            await queue(input, new URL('/ask?prompt=' + encodeURIComponent(prompt), location.origin));
+            input.value = '';
+          };
+          box.querySelector('button').onclick = submit;
+          input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+        }
+
         function renderColumn(panel, depth) {
           const col = document.createElement('div');
           col.className = 'col' + (panel.mode === 'blame' ? ' blamecol' : '');
@@ -331,6 +391,18 @@ module HColumns
           head.className = 'col-head';
           head.innerHTML = `<span class="type">${esc(panel.node.type)}</span> ${esc(panel.node.name)}`;
           col.appendChild(head);
+
+          // A Suggestion with a fix gets a one-click "dispatch fix" — it queues a
+          // Request on the bridge log (the browser echo of `hcol fix`), which appears
+          // in the columns on the next frame. Queue only; nothing runs from here.
+          const props = panel.node.properties || {};
+          if (DISPATCH && panel.node.type === 'Suggestion' && props.fix) {
+            const btn = document.createElement('span');
+            btn.className = 'act';
+            btn.textContent = '▷ dispatch fix';
+            btn.onclick = () => queue(btn, new URL('/dispatch?id=' + encodeURIComponent(panel.node.id), location.origin));
+            col.appendChild(btn);
+          }
 
           const tabs = document.createElement('div');
           tabs.className = 'tabs';
@@ -436,6 +508,7 @@ module HColumns
           };
         }
 
+        initAsk();
         openColumn(ROOT_ID, null, 0).then(() => {
           if (LIVE) { setBadge('● live', true); STREAM ? connectSSE() : pollLive(); }
         });

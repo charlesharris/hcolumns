@@ -507,11 +507,23 @@ trade-off and a worked use case before recommending).
   call — a failed/stalled task exposes a re-run affordance rather than auto-retrying); the Request/LLMTask
   split already makes a retry a second task, but nothing surfaces it yet. SIGWINCH was on this list until a
   real run **removed it by measurement**.
-- **Dispatch from the UI — the guiding star's last hop.** `hcol serve` already renders suggestions and
-  their savings; a click that queues the Request would make hcolumns the *interface* for LLM-backed
-  development rather than a viewer beside one. Everything under it exists (Request/LLMTask/`hcol run`);
-  what's missing is the affordance and the safety story (a dispatch that edits code from a browser
-  click needs more than a confirm dialog — probably worktree isolation, `hc-4s4`).
+- **Dispatch from the UI — the guiding star's last hop (IN PROGRESS, branch `hc-ui-dispatch`).** Scoped
+  *with* Charris into two halves so the safe win isn't gated behind the risky one. **Phase A — queue
+  from the UI: DONE.** Three affordances land a Request on the bridge log the serve is tailing (the
+  browser echo of ask/fix), shown live: an ask box in the header, a "▷ dispatch fix" button on a
+  Suggestion, and `/dispatch`+`/ask` endpoints mirroring `/flag` (GET, mutation-as-event). A new
+  `Dispatcher` (no HTTP, like `Web::App`) holds the queue logic; the App exposes `dispatch`/`ask`/
+  `dispatch_available?`; the ask box shows ONLY when a bridge log is present. Queuing is always-on and
+  needs no permission story — a Request is an intent, nothing runs until dispatched (as safe as `hcol
+  ask`). Caught a real bug: both `AppSource` wrappers (Locked/Refreshing) forward a FIXED method
+  allow-list, so the new methods were invisible until added — now pinned by a regression test. **Phase B —
+  execute, isolated, OPT-IN: NEXT.** Decisions locked (Charris): `hcol serve . --dispatch` gates
+  execution (plain serve stays a read-only viewer); a dispatch spawns a DETACHED `hcol run --worktree`
+  scoped to that request → the agent edits in a `git worktree` on branch `hcol/<key>` → commits there;
+  **review-only merge-back** (the branch/diff is surfaced, the human merges — a browser click never
+  touches the working tree). Retry-from-UI folds in here (it needs execution — `runner.retry` submits a
+  new task). Still to design: the detached-process/worktree lifecycle, the `--worktree` run mode, and
+  surfacing the resulting branch/diff (existing `gitdiff` facets). `hc-4s4`.
 - **Retry — DONE for the CLI (33e), USER-initiated by decision (Charris's call).** `hcol retry [task-key]`
   re-runs failed work as a fresh SECOND task on the same Request (history isn't rewritten — the failed
   task stays as what happened, and `outstanding` stays satisfied so a later `hcol run` won't also re-fire

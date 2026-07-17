@@ -22,7 +22,7 @@ module HColumns
       # analogue of the TUI's tick-on-IO-timeout. `clock` is the injectable wall
       # clock (real time by default, a lambda in tests) used to measure elapsed.
       def initialize(workspace:, root_id:, now:, session: nil, resolver: ModeResolver.new,
-                     feed: nil, clock: -> { Time.now })
+                     feed: nil, clock: -> { Time.now }, dispatcher: nil)
         @workspace = workspace
         @root_id = root_id
         @now = now
@@ -30,11 +30,18 @@ module HColumns
         @resolver = resolver
         @feed = feed
         @clock = clock
+        @dispatcher = dispatcher
         @start = clock.call if feed
       end
 
       def live?
         !@feed.nil?
+      end
+
+      # Whether a click can queue work here (there's a bridge log to append to) —
+      # the client uses it to decide whether to show the ask box / dispatch buttons.
+      def dispatch_available?
+        !@dispatcher.nil?
       end
 
       # Release any events whose time has arrived into the graph (single-writer, on
@@ -81,6 +88,22 @@ module HColumns
 
         @workspace.flag(node_id, level, at: @now)
         { ok: true, id: node_id, level: level.to_s }
+      end
+
+      # Queue a suggestion's fix as a Request from the browser (the web echo of
+      # `hcol fix`). Returns nil when there's no dispatcher (a static serve), an
+      # unknown node, or a suggestion with no fix — so the router can 404 it. The
+      # Request lands on the bridge log the serve is tailing, so it shows in the
+      # columns on the next frame.
+      def dispatch(node_id)
+        return nil unless @dispatcher
+
+        @dispatcher.dispatch_suggestion(@workspace.node(node_id))
+      end
+
+      # Queue an arbitrary prompt from the browser (the web echo of `hcol ask`).
+      def ask(prompt)
+        @dispatcher&.ask(prompt)
       end
 
       private

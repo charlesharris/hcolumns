@@ -45,6 +45,22 @@ RSpec.describe HColumns::Web::Server do
       expect(server.respond("GET", "/favicon.ico", {}).first).to eq(404)
       expect(server.respond("POST", "/", {}).first).to eq(405)
     end
+
+    it "routes /dispatch and /ask to the app, 404ing when there's no dispatcher" do
+      # This app has no dispatcher (static serve), so both refuse with a JSON error.
+      expect(server.respond("GET", "/dispatch", { "id" => orders_id }).first).to eq(404)
+      expect(server.respond("GET", "/ask", { "prompt" => "hi" }).first).to eq(404)
+    end
+
+    it "returns the dispatch receipt as JSON when a dispatcher is wired" do
+      dispatcher = instance_double(HColumns::Dispatcher, ask: { ok: true, queued: "ask" })
+      wired = HColumns::Web::App.new(workspace: workspace, root_id: orders_id, now: now, dispatcher: dispatcher)
+      status, type, body = described_class.new(wired).respond("GET", "/ask", { "prompt" => "summarize" })
+
+      expect(status).to eq(200)
+      expect(type).to eq("application/json")
+      expect(JSON.parse(body)).to include("ok" => true, "queued" => "ask")
+    end
   end
 
   describe "over a real socket" do

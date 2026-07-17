@@ -38,6 +38,32 @@ RSpec.describe HColumns::Web::App do
     expect(descended[:node][:id]).to eq(target) # lazy expand on the shared workspace made it real
   end
 
+  describe "dispatch (the UI-dispatch hop's queue half)" do
+    it "reports no dispatch when there's no dispatcher (a static serve stays read-only)" do
+      expect(app.dispatch_available?).to be false
+      expect(app.dispatch("obj:whatever")).to be_nil
+      expect(app.ask("anything")).to be_nil
+    end
+
+    it "delegates to the dispatcher, queueing a suggestion's fix by node id" do
+      dispatcher = instance_double(HColumns::Dispatcher)
+      node = graph.node(orders_id)
+      wired = described_class.new(workspace: workspace, root_id: orders_id, now: now, dispatcher: dispatcher)
+
+      expect(app.dispatch_available?).to be false
+      expect(wired.dispatch_available?).to be true
+      expect(dispatcher).to receive(:dispatch_suggestion).with(node).and_return(ok: true)
+      expect(wired.dispatch(orders_id)).to eq(ok: true)
+    end
+
+    it "delegates ask to the dispatcher" do
+      dispatcher = instance_double(HColumns::Dispatcher)
+      wired = described_class.new(workspace: workspace, root_id: orders_id, now: now, dispatcher: dispatcher)
+      expect(dispatcher).to receive(:ask).with("hello").and_return(ok: true)
+      expect(wired.ask("hello")).to eq(ok: true)
+    end
+  end
+
   it "follows the session phase so the browser's auto mode matches the agent's work" do
     session_graph = HColumns::Providers::AgentSession.build(now: now)
     session_ws = HColumns::Workspace.new(graph: session_graph)
