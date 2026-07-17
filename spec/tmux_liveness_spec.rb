@@ -1,10 +1,13 @@
 # frozen_string_literal: true
 
-# Stall detection and the process-tree reaper (hc-4s4). The completion event is
-# what a HEALTHY task emits; these are the two mechanisms for the UNhealthy ones —
-# a wedge that never emits, and the pane/process tree it leaves behind. Both are
-# structured as pure functions of injectable readings, so the policy is pinned
-# with no tmux, no real processes, and no wall-clock wait.
+require "tmpdir"
+
+# Stall detection, the process-tree reaper, and the durable output channel (hc-4s4).
+# The completion event is what a HEALTHY task emits; these are the mechanisms for the
+# UNhealthy ones — a wedge that never emits, the pane/process tree it leaves behind,
+# and reading an answer back off a pane that has died. Each is structured as a pure
+# function of injectable readings or a raw string, so the policy is pinned with no
+# tmux, no real processes, and no wall-clock wait.
 RSpec.describe HColumns::Strategies::TmuxClaudeCode do
   let(:strategy) { described_class.new(root: "/repo/x") }
 
@@ -75,6 +78,67 @@ RSpec.describe HColumns::Strategies::TmuxClaudeCode do
     it "does not loop forever on a cycle" do
       cyclic = ->(pid) { { 1 => [2], 2 => [1] }.fetch(pid, []) }
       expect(strategy.descendants(1, cyclic)).to contain_exactly(1, 2)
+    end
+  end
+
+  # The durable output channel (hc-4s4, pipe-pane -o). capture-pane sees only the
+  # visible grid and cannot read a dead pane; the pipe file holds the whole session
+  # and outlives the pane. These pin the CLEANING — turning a raw TUI byte stream into
+  # legible prose — which is the pure, testable half. clean_pane_capture/pane_output
+  # are internal, so they are reached via send.
+  describe "#clean_pane_capture" do
+    def clean(raw, **opts) = strategy.send(:clean_pane_capture, raw, **opts)
+
+    it "strips ANSI colour and cursor sequences, leaving the text" do
+      raw = "\e[1m\e[32mFINAL: the tuner scores edges\e[0m\n"
+      expect(clean(raw)).to eq("FINAL: the tuner scores edges")
+    end
+
+    it "resolves carriage-return overwrites to the text that won" do
+      raw = "downloading...\rdone in 3s\n"
+      expect(clean(raw)).to eq("done in 3s")
+    end
+
+    it "collapses the consecutive duplicate lines a TUI repaint leaves behind" do
+      raw = "answer line\nanswer line\nanswer line\ntail\n"
+      expect(clean(raw)).to eq("answer line\ntail")
+    end
+
+    it "drops blank lines and keeps only the tail" do
+      raw = (1..100).map { |i| "line #{i}" }.join("\n\n") + "\n"
+      expect(clean(raw, lines: 5).split("\n")).to eq(["line 96", "line 97", "line 98", "line 99", "line 100"])
+    end
+
+    it "recovers real prose from a spinner-and-repaint capture" do
+      # Shaped like the live experiment: a reverse-video spinner repainting in place
+      # via \r, then the agent's final answer printed once below it.
+      raw = +""
+      5.times { |s| raw << "\r\e[7m spinner #{s} esc to interrupt \e[0m" }
+      raw << "\nFINAL ANSWER: the tuner scores edges by recency and structure\n"
+      cleaned = clean(raw)
+      expect(cleaned).to include("FINAL ANSWER: the tuner scores edges by recency and structure")
+      expect(cleaned).not_to include("\e[") # no escape bytes survive
+    end
+
+    it "scrubs invalid bytes rather than raising (binread gives ASCII-8BIT)" do
+      raw = "ok \xFF\xFE bad\n".b
+      expect { clean(raw) }.not_to raise_error
+    end
+  end
+
+  describe "#pane_output" do
+    around { |ex| Dir.mktmpdir("hcol-pane") { |d| @dir = d; ex.run } }
+
+    it "reads and cleans the durable file, working with no live pane" do
+      path = File.join(@dir, "t.pane")
+      File.binwrite(path, "\e[32mrecovered answer\e[0m\n")
+      h = described_class::Handle.new(pane_out: path)
+      expect(strategy.send(:pane_output, h)).to eq("recovered answer")
+    end
+
+    it "is empty when no pipe file exists, so answer() can fall back" do
+      h = described_class::Handle.new(pane_out: File.join(@dir, "absent.pane"))
+      expect(strategy.send(:pane_output, h)).to eq("")
     end
   end
 end

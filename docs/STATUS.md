@@ -1,13 +1,13 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-17 · **Branch:** `hc-4s4-runner-robustness` (33b/33c; off `main` at 33a) · **Tests:** 320 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-17 · **Branch:** `main` (through 33d) · **Tests:** 328 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed** (working tree clean, 320 ex green) on branch
-> `hc-4s4-runner-robustness` — 33b/33c off `main` at 33a, hc-4s4's four robustness gaps closed, not yet
-> merged. **Resume at [§8](#8-next-up--open-threads).**
+> ✅ **All work is committed on `main`** (working tree clean, 328 ex green) through 33d — hc-4s4's four
+> robustness gaps closed (33b/33c) and the durable pipe-pane output channel landed (33d). **Resume at
+> [§8](#8-next-up--open-threads).**
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
@@ -472,7 +472,7 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 1–33c are committed; tree clean, 320 ex green. The backlog lives in **beads** (`bd ready`;
+Layers 1–33d are committed; tree clean, 328 ex green. The backlog lives in **beads** (`bd ready`;
 `hcol walk .` → the beads index). What follows is the prose that doesn't fit an issue. **Pick one**
 (decide the load-bearing ones *with* Charris first, per [[feedback-discuss-tradeoffs]] — present the
 trade-off and a worked use case before recommending).
@@ -496,16 +496,27 @@ trade-off and a worked use case before recommending).
   `alive?` so a completed-but-closed pane reads back as `:done` not a vanished-pane failure — and reaps
   the panes of already-terminal tasks (conservative: only provably-finished sessions, never one a
   concurrent live runner might own). Idempotent throughout, so it's safe under the multi-process model.
-  *Still genuinely open here:* `pipe-pane -o` as a durable output channel (`capture-pane` is lossy — only
-  the visible pane); a real stall/timeout that dispatches a *retry* rather than just failing. SIGWINCH was
-  on this list until a real run **removed it by measurement**.
+  **Durable output channel (33d):** `capture-pane` renders only the VISIBLE grid and cannot read a pane
+  that has died — so a long or completed-then-closed session lost its answer. `pipe-pane -o` now streams
+  every pane byte to a key-derived file the moment the pane exists; `answer()` prefers that (falling back
+  to the live capture, then a log pointer), so the prose is complete AND survives the pane's death — which
+  is exactly the dead-pane case reconcile creates. A key-derived path means an ADOPTED task reads the same
+  file without re-attaching (a second `-o` would toggle the pipe shut). Cleaning is version-AGNOSTIC (no
+  per-vendor chrome matrix — the gastown trap): strip ANSI, resolve `\r`, collapse consecutive repaint
+  dupes, keep the tail. *Still genuinely open here:* **retry is deliberately USER-initiated** (Charris's
+  call — a failed/stalled task exposes a re-run affordance rather than auto-retrying); the Request/LLMTask
+  split already makes a retry a second task, but nothing surfaces it yet. SIGWINCH was on this list until a
+  real run **removed it by measurement**.
 - **Dispatch from the UI — the guiding star's last hop.** `hcol serve` already renders suggestions and
   their savings; a click that queues the Request would make hcolumns the *interface* for LLM-backed
   development rather than a viewer beside one. Everything under it exists (Request/LLMTask/`hcol run`);
   what's missing is the affordance and the safety story (a dispatch that edits code from a browser
   click needs more than a confirm dialog — probably worktree isolation, `hc-4s4`).
-- **Retry, now that it's cheap.** Request/LLMTask split deliberately so a retry is a *second task*, not
-  rewritten history. Nothing exposes it yet; a failed task should be re-runnable without re-asking.
+- **Retry, now that it's cheap — USER-initiated by decision (Charris's call).** Request/LLMTask split
+  deliberately so a retry is a *second task*, not rewritten history. Nothing exposes it yet; a failed
+  task should be re-runnable without re-asking — but the re-run is an action the user takes actively (a
+  button / `hcol retry <task>`), NOT an automatic re-dispatch on stall/failure. The stall detector fails
+  fast so the human sees it and *chooses*; it does not silently try again.
 
 - **Sharpen the `debugging` phase (content facets now exist).** Layer 14 added `source`/`gitdiff`/
   `output` facets, so a `TestRun`/`LogLine` already shows its captured output. What's *not* done: a

@@ -3,6 +3,7 @@
 require "open3"
 require "json"
 require "fileutils"
+require "shellwords"
 
 module HColumns
   module Strategies
@@ -152,21 +153,37 @@ module HColumns
         out.match?(READY_PROMPT) && !out.match?(TRUST_DIALOG)
       end
 
-      Handle = Struct.new(:session, :log, :prompt_file, :started_at, :pane, :delivered,
+      Handle = Struct.new(:session, :log, :prompt_file, :pane_out, :started_at, :pane, :delivered,
                           :last_progress_at, :last_size, :last_activity, keyword_init: true)
 
       def start(task)
         FileUtils.mkdir_p(@tasks_dir)
         handle = Handle.new(session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
                             prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"),
+                            pane_out: File.join(@tasks_dir, "#{task.key}.pane"),
                             started_at: @clock.call, delivered: false, last_size: 0)
         File.write(handle.prompt_file, "#{task.prompt}\n")
 
         kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
         spawn(handle)
         handle.pane = resolve_pane(handle.session)
+        start_pipe(handle) # durable output channel, attached the moment the pane exists
         accept_trust(handle) unless self.class.trusted?(@root)
         handle
+      end
+
+      # Attach a DURABLE output channel the moment the pane exists (hc-4s4, pipe-pane).
+      # capture-pane only renders the VISIBLE grid and cannot read a pane that has since
+      # died; pipe-pane streams every byte the pane emits to a file that outlives it —
+      # so the answer is complete (not just the last screen) and recoverable even after
+      # the pane closes. The path derives from the key like everything else, so a later
+      # runner that ADOPTS this task reads the same file WITHOUT re-attaching (a second
+      # `-o` would toggle the pipe shut). Best-effort: a pipe that won't attach must not
+      # fail the task — answer() falls back to the live capture.
+      def start_pipe(handle)
+        tmux("pipe-pane", "-o", "-t", handle.pane, "cat >> #{Shellwords.escape(handle.pane_out)}")
+      rescue StandardError
+        nil
       end
 
       # Clear the first-run trust dialog. Deliberately NOT done by writing
@@ -237,6 +254,7 @@ module HColumns
         session = session_name(key)
         handle = Handle.new(session: session, log: File.join(@tasks_dir, "#{key}.jsonl"),
                             prompt_file: File.join(@tasks_dir, "#{key}.prompt"),
+                            pane_out: File.join(@tasks_dir, "#{key}.pane"), # same durable file the original run pipes to
                             started_at: @clock.call, delivered: true, last_size: 0,
                             last_progress_at: @clock.call)
         handle.pane = resolve_pane(session) if alive?(session)
@@ -407,11 +425,50 @@ module HColumns
         end
       end
 
-      # The prose answer, resilient to a pane that has already closed (an adopted task
-      # whose original runner died). A live pane gives the rich tail; a gone one falls
-      # back to a pointer at the task log, which carries the real STRUCTURE regardless.
+      # The prose answer. Prefers the DURABLE pipe-pane capture, which holds the whole
+      # session and reads back even after the pane has closed (an adopted task whose
+      # original runner died); falls back to the live capture-pane tail if no pipe file
+      # exists, and to a task-log pointer if there is nothing to show at all. The real
+      # STRUCTURE always comes through the task log regardless — this is just the prose.
       def answer(handle)
-        alive?(handle.session) ? transcript_tail(handle) : "completed — pane already closed; work is in #{handle.log}"
+        captured = pane_output(handle)
+        return captured unless captured.empty?
+        return transcript_tail(handle) if alive?(handle.session)
+
+        "completed — no captured output; work is in #{handle.log}"
+      end
+
+      # Read and clean the durable capture. Works with a dead pane; empty string when
+      # there is nothing (no pipe attached, or it never wrote).
+      def pane_output(handle, lines: 60)
+        path = handle.pane_out
+        return "" unless path && File.file?(path) && File.size(path).positive?
+
+        clean_pane_capture(File.binread(path), lines: lines)
+      rescue SystemCallError
+        ""
+      end
+
+      # Turn a raw pipe-pane capture — ANSI escapes, cursor repaints, carriage-return
+      # overwrites — into legible prose. Version-AGNOSTIC on purpose: no per-vendor
+      # chrome matrix (the gastown trap). It strips control sequences, resolves each \r
+      # to the text that won, drops blank lines, and collapses the CONSECUTIVE duplicate
+      # lines a TUI's repaint leaves behind, then keeps the tail. Not a faithful screen
+      # reconstruction — a durable, readable record that outlives scrollback and the pane.
+      CSI = /\e\[[0-9;?]*[ -\/]*[@-~]/.freeze
+      OSC = /\e\][^\a\e]*(?:\a|\e\\)/.freeze
+
+      def clean_pane_capture(raw, lines: 60)
+        text = raw.to_s.dup.force_encoding("UTF-8").scrub
+        text = text.gsub(CSI, "").gsub(OSC, "").gsub(/\e[()][AB0]/, "").gsub(/\e[=>]/, "")
+        out = []
+        text.split("\n").each do |physical|
+          resolved = (physical.include?("\r") ? physical.split("\r").last : physical).to_s.rstrip
+          next if resolved.empty? || out.last == resolved # drop blanks and consecutive repaint dupes
+
+          out << resolved
+        end
+        out.last(lines).join("\n")
       end
 
       # The human-readable answer. The STRUCTURE comes back through the task log
