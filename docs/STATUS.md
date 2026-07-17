@@ -1,12 +1,13 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-16 · **Branch:** `main` · **Tests:** 308 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-17 · **Branch:** `hc-4s4-runner-robustness` (33b/33c; off `main` at 33a) · **Tests:** 320 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed on `main`** (working tree clean, 308 ex green). **Resume at
-> [§8](#8-next-up--open-threads).**
+> ✅ **All work is committed** (working tree clean, 320 ex green) on branch
+> `hc-4s4-runner-robustness` — 33b/33c off `main` at 33a, hc-4s4's four robustness gaps closed, not yet
+> merged. **Resume at [§8](#8-next-up--open-threads).**
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
@@ -471,20 +472,33 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 1–33a are committed; tree clean, 308 ex green. The backlog lives in **beads** (`bd ready`;
+Layers 1–33c are committed; tree clean, 320 ex green. The backlog lives in **beads** (`bd ready`;
 `hcol walk .` → the beads index). What follows is the prose that doesn't fit an issue. **Pick one**
 (decide the load-bearing ones *with* Charris first, per [[feedback-discuss-tradeoffs]] — present the
 trade-off and a worked use case before recommending).
 
-- **Make the runner survive contact (`hc-4s4`, the live frontier).** The loop closes and an agent has
-  fixed a real bug from a queued request — but: **`hcol run` dies with its shell** (a task stayed
-  `running` although the agent had finished and its hook had reported — the whole answer was on disk,
-  with nobody left to read it), **`stop()` is a bare `kill-session`** against an agent that ignores
-  SIGHUP (gastown needed a full process-tree reaper *and* an orphan reconciler; **we leak panes today**),
-  and there is **no stall detector**, so a wedge costs a full timeout instead of a visible failure —
-  it would have caught the readiness bug in seconds rather than 150s. `pipe-pane -o` is the missing
-  durable output channel; `capture-pane` alone is lossy (only the visible pane) and is all we have.
-  SIGWINCH was on this list until a real run **removed it by measurement**.
+- **Make the runner survive contact (`hc-4s4`, the live frontier) — the four gaps are now CLOSED
+  (layers 33b/33c).** The loop closed in 33/33a and an agent fixed a real bug from a queued request; the
+  runner was then hardened against the two failure modes the prior art warned about, plus its two known
+  leaks. **Stall detection (33b):** a wedge emits nothing, and absence of a signal isn't a signal, so a
+  liveness notion is unavoidable — but NOT gastown's `esc to interrupt` content-grep. `poll` fails a task
+  quiet on *both* heartbeats for `STALL_TIMEOUT` (120s): the task log growing (a hook fired — real work)
+  *or* tmux's `window_activity` advancing (the pane redrawing, which the Claude TUI does continuously).
+  Both are timestamps, same category as file mtime; verified live on tmux 3.6a that `window_activity`
+  freezes on silence and advances on output. The log alone was too sparse (Read/Grep and non-test Bash
+  emit nothing to it), so `window_activity` covers that blind spot. **Real `stop()` (33b):** was a bare
+  `kill-session` (SIGHUPs the pane group — but the agent is exactly what ignores SIGHUP, so children
+  leaked); now it captures the pane pid, kills the session, then SIGKILLs the surviving tree leaf-first —
+  verified live against a tree that trapped HUP. **Survive-the-shell + orphan reconcile (33c):** `hcol
+  run` died with its terminal, stranding finished-on-disk tasks as `running`; rather than daemonize, the
+  next `hcol run` calls `reconcile(graph)` — re-adopts every in-flight task (handle rebuilt from the key
+  alone) and lets the normal poll loop settle it, with `poll` now checking finished-on-disk *before*
+  `alive?` so a completed-but-closed pane reads back as `:done` not a vanished-pane failure — and reaps
+  the panes of already-terminal tasks (conservative: only provably-finished sessions, never one a
+  concurrent live runner might own). Idempotent throughout, so it's safe under the multi-process model.
+  *Still genuinely open here:* `pipe-pane -o` as a durable output channel (`capture-pane` is lossy — only
+  the visible pane); a real stall/timeout that dispatches a *retry* rather than just failing. SIGWINCH was
+  on this list until a real run **removed it by measurement**.
 - **Dispatch from the UI — the guiding star's last hop.** `hcol serve` already renders suggestions and
   their savings; a click that queues the Request would make hcolumns the *interface* for LLM-backed
   development rather than a viewer beside one. Everything under it exists (Request/LLMTask/`hcol run`);
