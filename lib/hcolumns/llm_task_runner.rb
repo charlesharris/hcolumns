@@ -143,6 +143,25 @@ module HColumns
       end
     end
 
+    # Retry failed work as a fresh SECOND task, USER-initiated by design (hc-4s4,
+    # Charris's call). Nothing here fires automatically — the stall detector fails
+    # fast precisely so a human can SEE the failure and CHOOSE to re-run. A retry is
+    # never a rewrite of history: the failed task stays in the log as what happened,
+    # and the retry is a new LLMTask against the same Request. `outstanding` stays
+    # satisfied (the request already has tasks, so a later `hcol run` won't also
+    # re-fire it), and the graph now shows the attempt count.
+    #
+    # With a key, retry exactly that task's request — even if it succeeded, since the
+    # user asked by name. Without, retry every request whose ONLY outcome so far is
+    # failure, never one that also has a done or in-flight task. Returns the keys
+    # started.
+    def retry(graph, task_key = nil)
+      requests = task_key ? [request_of(graph, task_key)] : retryable_requests(graph)
+      requests.compact.uniq(&:id).map do |request|
+        submit(request.properties[:prompt], request_id: request.id)
+      end
+    end
+
     def running = @tasks.values.select { |t| t.state == :running }
 
     def done? = running.empty?
@@ -178,6 +197,28 @@ module HColumns
 
     def summary_of(prompt)
       prompt.to_s.strip.gsub(/\s+/, " ")[0, 60]
+    end
+
+    # The Request a given task was dispatched from, or nil if the task is unknown or
+    # was submitted without one (a retry needs the ORIGINAL prompt, which lives on
+    # the Request — the LLMTask only carries a state summary).
+    def request_of(graph, task_key)
+      task = graph.nodes.find { |n| n.type == :LLMTask && n.properties[:task_key] == task_key }
+      id = task&.properties&.dig(:request_id)
+      id && graph.node(id)
+    end
+
+    # Requests whose tasks are ALL failed — worth retrying — excluding any that also
+    # have a done or in-flight task, which is already being handled or has an answer.
+    def retryable_requests(graph)
+      by_request = graph.nodes.select { |n| n.type == :LLMTask && n.properties[:request_id] }
+                        .group_by { |n| n.properties[:request_id] }
+      by_request.filter_map do |request_id, tasks|
+        states = tasks.map { |t| t.properties[:state] }
+        next unless states.include?(:failed) && (states & %i[done running pending]).empty?
+
+        graph.node(request_id)
+      end
     end
   end
 

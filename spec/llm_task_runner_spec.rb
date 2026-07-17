@@ -107,6 +107,68 @@ RSpec.describe HColumns::LLMTaskRunner do
     expect(HColumns::Strategies::TmuxClaudeCode::DEFAULT_COMMAND).to include("--dangerously-skip-permissions")
   end
 
+  # Retry (hc-4s4), USER-initiated: a failed task is re-run as a SECOND task against
+  # the same Request, so history isn't rewritten and the graph shows the attempt count.
+  describe "retrying failed work" do
+    def bridge = HColumns::AgentBridge.new(path: @log, session: "live")
+
+    # Queue a request, dispatch it under a known key, and let that dispatch FAIL —
+    # leaving the graph with one failed task hung off a live request.
+    def queue_and_fail(prompt, key)
+      bridge.apply("request ask - #{prompt}")
+      request = described_class.outstanding(graph).first
+      runner(echo(fail_on: [key])).submit(request.properties[:prompt], key: key, request_id: request.id)
+      request
+    end
+
+    def states = graph.nodes.select { |n| n.type == :LLMTask }.map { |n| n.properties[:state] }
+
+    it "re-runs a failed task as a fresh second task against the same request" do
+      queue_and_fail("summarize the tuner", "a1")
+      expect(states).to eq([:failed])
+
+      r2 = runner(echo(answers: {})) # the retry's generated key answers by default
+      expect(r2.retry(graph).size).to eq(1)
+      r2.run_to_completion(timeout: 5, interval: 0.1, sleeper: ->(_s) {})
+
+      # Two tasks now — the failure stays as history, the retry answers.
+      expect(states).to contain_exactly(:failed, :done)
+    end
+
+    it "does not retry a request that already has an answer" do
+      bridge.apply("request ask - already fine")
+      req = described_class.outstanding(graph).first
+      r = runner(echo(answers: { "a1" => "the answer" }))
+      r.submit(req.properties[:prompt], key: "a1", request_id: req.id)
+      r.poll # → done
+
+      expect(runner(echo).retry(graph)).to be_empty
+    end
+
+    it "retries nothing when there are no failures (a queued-but-undispatched request)" do
+      bridge.apply("request ask - never dispatched")
+      expect(runner(echo).retry(graph)).to be_empty
+    end
+
+    it "retries one task by key even if its request also has other tasks" do
+      req = queue_and_fail("do the thing", "a1")
+      # A second, still-failed attempt on the SAME request…
+      runner(echo(fail_on: ["a2"])).submit(req.properties[:prompt], key: "a2", request_id: req.id)
+
+      # By key: exactly one retry, not one-per-failed-task.
+      r = runner(echo(answers: {}))
+      expect(r.retry(graph, "a1").size).to eq(1)
+    end
+
+    it "does not double-fire when a request has two failed tasks (no key)" do
+      req = queue_and_fail("twice failed", "a1")
+      runner(echo(fail_on: ["a2"])).submit(req.properties[:prompt], key: "a2", request_id: req.id)
+
+      # Both attempts failed, but the request is retried ONCE, not once per failure.
+      expect(runner(echo(answers: {})).retry(graph).size).to eq(1)
+    end
+  end
+
   # Surviving the shell (hc-4s4): a runner dies with its terminal, but the agents it
   # spawned keep working in detached panes and finish on disk. The NEXT `hcol run`
   # reconciles — re-adopts what's still in flight and settles it, reaps what's done.

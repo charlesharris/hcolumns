@@ -1,13 +1,13 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-17 · **Branch:** `main` (through 33d) · **Tests:** 328 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-17 · **Branch:** `main` (through 33e) · **Tests:** 333 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed on `main`** (working tree clean, 328 ex green) through 33d — hc-4s4's four
-> robustness gaps closed (33b/33c) and the durable pipe-pane output channel landed (33d). **Resume at
-> [§8](#8-next-up--open-threads).**
+> ✅ **All work is committed on `main`** (working tree clean, 333 ex green) through 33e — hc-4s4's four
+> robustness gaps closed (33b/33c), the durable pipe-pane output channel landed (33d), and user-initiated
+> `hcol retry` (33e). **Resume at [§8](#8-next-up--open-threads).**
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
@@ -472,7 +472,7 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 1–33d are committed; tree clean, 328 ex green. The backlog lives in **beads** (`bd ready`;
+Layers 1–33e are committed; tree clean, 333 ex green. The backlog lives in **beads** (`bd ready`;
 `hcol walk .` → the beads index). What follows is the prose that doesn't fit an issue. **Pick one**
 (decide the load-bearing ones *with* Charris first, per [[feedback-discuss-tradeoffs]] — present the
 trade-off and a worked use case before recommending).
@@ -512,11 +512,14 @@ trade-off and a worked use case before recommending).
   development rather than a viewer beside one. Everything under it exists (Request/LLMTask/`hcol run`);
   what's missing is the affordance and the safety story (a dispatch that edits code from a browser
   click needs more than a confirm dialog — probably worktree isolation, `hc-4s4`).
-- **Retry, now that it's cheap — USER-initiated by decision (Charris's call).** Request/LLMTask split
-  deliberately so a retry is a *second task*, not rewritten history. Nothing exposes it yet; a failed
-  task should be re-runnable without re-asking — but the re-run is an action the user takes actively (a
-  button / `hcol retry <task>`), NOT an automatic re-dispatch on stall/failure. The stall detector fails
-  fast so the human sees it and *chooses*; it does not silently try again.
+- **Retry — DONE for the CLI (33e), USER-initiated by decision (Charris's call).** `hcol retry [task-key]`
+  re-runs failed work as a fresh SECOND task on the same Request (history isn't rewritten — the failed
+  task stays as what happened, and `outstanding` stays satisfied so a later `hcol run` won't also re-fire
+  it). No key: every request whose ONLY outcome so far is failure, one retry per request (never once-per-
+  failed-task, never one that also has a done/in-flight task). A key: that one, even if it succeeded, since
+  the user asked by name. NOTHING auto-retries — the stall detector fails fast so the human sees it and
+  *chooses*. *Still open:* the same affordance in the UI (`hcol serve` — a click on a failed task), which
+  folds into the UI-dispatch hop below rather than being its own thing.
 
 - **Sharpen the `debugging` phase (content facets now exist).** Layer 14 added `source`/`gitdiff`/
   `output` facets, so a `TestRun`/`LogLine` already shows its captured output. What's *not* done: a

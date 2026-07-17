@@ -29,6 +29,7 @@ module HColumns
       when "fix" then fix(@argv.first)
       when "ask" then ask(@argv.first)
       when "run" then run_requests
+      when "retry" then retry_requests(@argv.first)
       when "serve" then serve(@argv.first)
       when "search" then search(@argv.first)
       when "nodes" then list_nodes
@@ -276,6 +277,28 @@ module HColumns
         puts "\ndispatched. watch them in `hcol serve .` — each task flips ◌ → ◐ → ✓ in place."
       end
 
+      runner.run_to_completion(timeout: (@opts[:timeout] || 600).to_i)
+      runner.tasks.each_value { |t| puts "  #{t.state == :done ? '✓' : '✗'} #{t.prompt.to_s[0, 62]}" }
+      0
+    end
+
+    # `hcol retry [task-key]` — re-run failed work (hc-4s4). USER-initiated by design
+    # (Charris's call): the runner never auto-retries a stall, so this is the human
+    # choosing to. Like `run` but aimed at failures — with a key, that one task's
+    # request; without, every request whose only outcome so far is a failure. The
+    # retry is a fresh task on the same Request, so history isn't rewritten.
+    def retry_requests(task_key)
+      workspace, _root = composed_target(Dir.pwd, root: :session)
+      runner = LLMTaskRunner.new(strategy: run_strategy, log: bridge_log(Dir.pwd),
+                                 session: @opts[:session] || "live")
+      started = runner.retry(workspace.graph, task_key)
+      if started.empty?
+        puts task_key ? "no task '#{task_key}' with a source request to retry." \
+                      : "nothing to retry. (no failed task, or its request already has a live/answered task.)"
+        return 0
+      end
+
+      puts "retrying #{started.size} task#{started.size == 1 ? '' : 's'} — watch them in `hcol serve .`, each flips ◌ → ◐ → ✓ in place."
       runner.run_to_completion(timeout: (@opts[:timeout] || 600).to_i)
       runner.tasks.each_value { |t| puts "  #{t.state == :done ? '✓' : '✗'} #{t.prompt.to_s[0, 62]}" }
       0
@@ -916,6 +939,10 @@ module HColumns
                                      yet. Drives Claude Code in a tmux pane you can attach to and
                                      take over; each task flips ◌ → ◐ → ✓ in the columns as it goes.
                                      --echo uses the test double (no tokens); --timeout N (default 600)
+          hcol retry [task-key]      re-run failed work as a fresh task on the same request (history
+                                     isn't rewritten). No key: every request whose only outcome is a
+                                     failure. A key: that one, even if it succeeded. USER-initiated —
+                                     the runner never auto-retries a stall; you choose to
           hcol fix <suggestion-id>   ask for a suggestion (from a transcript's `advice` tab) to be
                                      acted on: appends ONE request event to the bridge log and stops.
                                      Nothing runs — a runner tailing the log decides whether to put an
