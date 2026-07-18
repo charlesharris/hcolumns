@@ -40,6 +40,7 @@ module HColumns
         @root_id = sample.root_id
         @live = sample.live?
         @dispatch = sample.respond_to?(:dispatch_available?) && sample.dispatch_available?
+        @execute = sample.respond_to?(:execution_available?) && sample.execution_available?
       end
 
       def live?
@@ -75,6 +76,14 @@ module HColumns
         when "/ask"
           json_response(app.ask(query["prompt"]),
                         missing: { error: "empty prompt or dispatch unavailable" })
+        when "/retry"
+          key = query["key"]
+          json_response(key && app.retry_task(key),
+                        missing: { error: "no such failed task, or execution not enabled (--dispatch)", key: key })
+        when "/review"
+          key = query["key"]
+          json_response(key && app.review(key),
+                        missing: { error: "no branch for this task", key: key })
         else
           [404, "text/plain", "not found\n"]
         end
@@ -181,6 +190,7 @@ module HColumns
                   .sub("__LIVE__", @live.to_s)
                   .sub("__STREAM__", @streaming.to_s)
                   .sub("__DISPATCH__", @dispatch.to_s)
+                  .sub("__EXECUTE__", @execute.to_s)
       end
 
       # The whole client, inline. Single-quoted heredoc so the JS `${}` template
@@ -294,6 +304,7 @@ module HColumns
         const LIVE = __LIVE__;
         const STREAM = __STREAM__;
         const DISPATCH = __DISPATCH__; // a bridge log is here — clicks can queue work
+        const EXECUTE = __EXECUTE__;   // --dispatch is on — a queued request will actually RUN
         const board = document.getElementById('board');
         const dock = document.getElementById('dock');
         const columns = []; // {id, mode} per open column, parallel to board.children
@@ -402,6 +413,35 @@ module HColumns
             btn.textContent = '▷ dispatch fix';
             btn.onclick = () => queue(btn, new URL('/dispatch?id=' + encodeURIComponent(panel.node.id), location.origin));
             col.appendChild(btn);
+          }
+
+          // A FAILED task gets a retry — user-initiated by design: nothing auto-retries
+          // a stall, so this is the human seeing the failure and choosing to re-run.
+          // The retry is a fresh second task on the same Request; history isn't rewritten.
+          if (EXECUTE && panel.node.type === 'LLMTask' && props.state === 'failed' && props.task_key) {
+            const btn = document.createElement('span');
+            btn.className = 'act';
+            btn.textContent = '↻ retry';
+            btn.onclick = () => queue(btn, new URL('/retry?key=' + encodeURIComponent(props.task_key), location.origin));
+            col.appendChild(btn);
+          }
+
+          // A finished isolated task left a branch behind. REVIEW-ONLY: this shows what
+          // to merge and never merges it — a browser click must not touch the working
+          // tree. Fetched lazily so a repo question stays off the render path.
+          if (EXECUTE && panel.node.type === 'LLMTask' && props.task_key) {
+            const note = document.createElement('span');
+            note.className = 'act';
+            note.textContent = '⎇ review branch';
+            note.onclick = async () => {
+              const r = await fetch(new URL('/review?key=' + encodeURIComponent(props.task_key), location.origin));
+              if (!r.ok) { note.textContent = '⎇ no branch yet'; return; }
+              const rev = await r.json();
+              dock.textContent = `${rev.branch}\n${rev.diffstat}\n\n` +
+                (rev.commits || []).map(c => `${c.sha.slice(0, 8)} ${c.subject}`).join('\n') +
+                `\n\n(review only — merge it yourself: git merge ${rev.branch})`;
+            };
+            col.appendChild(note);
           }
 
           const tabs = document.createElement('div');

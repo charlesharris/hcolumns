@@ -41,7 +41,7 @@ RSpec.describe HColumns::Web::AppSource do
   # invisible through them until added — the bug that made the ask box never show.
   # Pin that the dispatch surface is forwarded, not swallowed.
   it "forwards the dispatch surface (dispatch/ask/available?) through both wrappers" do
-    %i[dispatch_available? dispatch ask].each do |method|
+    %i[dispatch_available? dispatch ask execution_available? retry_task review].each do |method|
       expect(described_class::Locked::LockedApp::APP_API).to include(method)
       expect(described_class::Refreshing::SwappingApp::DELEGATED).to include(method)
     end

@@ -49,7 +49,8 @@ module HColumns
         # a long-lived /events stream locks only for each pump/version peek, so
         # panel fetches interleave with it instead of starving behind it.
         class LockedApp
-          APP_API = %i[pump version done? panel root flag dispatch dispatch_available? ask live? root_id].freeze
+          APP_API = %i[pump version done? panel root flag dispatch dispatch_available? ask
+                       execution_available? retry_task review live? root_id].freeze
 
           def initialize(app, mutex)
             @app = app
@@ -83,7 +84,8 @@ module HColumns
       # re-fetch their open columns against the fresh graph.
       class Refreshing
         class SwappingApp
-          DELEGATED = %i[done? panel root flag dispatch dispatch_available? ask live? root_id].freeze
+          DELEGATED = %i[done? panel root flag dispatch dispatch_available? ask
+                         execution_available? retry_task review live? root_id].freeze
 
           def initialize(build, probe, interval, mutex)
             @build = build

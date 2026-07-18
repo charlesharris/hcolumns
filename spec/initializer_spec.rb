@@ -30,11 +30,46 @@ RSpec.describe HColumns::Initializer do
     results = init
 
     expect(statuses(results)).to eq("agent_bridge_hook.rb" => :written, "SKILL.md" => :written,
-                                    "settings.json" => :written)
+                                    "settings.json" => :written, ".gitignore" => :created)
     expect(File.executable?(File.join(@dir, ".claude", "hooks", "agent_bridge_hook.rb"))).to be true
     expect(File.read(File.join(@dir, ".claude", "skills", "hcol", "SKILL.md"))).to include("hcol json session")
     expect(settings["hooks"].keys).to contain_exactly("SessionStart", "UserPromptSubmit", "PreToolUse",
                                                       "PostToolUse", "Stop")
+  end
+
+  # Runtime artifacts are local history of local runs. Left untracked they are noise
+  # in every `git status`; committed by accident they leak this machine's audit trail
+  # of what was dispatched. init claims the ignore so no repo has to discover either.
+  describe "the .hcolumns ignore" do
+    def gitignore = File.read(File.join(@dir, ".gitignore"))
+
+    it "claims the ignore on a repo that has no .gitignore yet" do
+      init
+      expect(gitignore).to include(".hcolumns/")
+    end
+
+    it "APPENDS to an existing .gitignore rather than rewriting the user's file" do
+      File.write(File.join(@dir, ".gitignore"), "*.gem\n/coverage/\n")
+      init
+
+      expect(gitignore).to start_with("*.gem\n/coverage/\n")
+      expect(gitignore).to include(".hcolumns/")
+    end
+
+    it "is idempotent — a second init does not stack duplicate blocks" do
+      init
+      init
+
+      expect(gitignore.scan(described_class::IGNORE_MARKER).size).to eq(1)
+    end
+
+    it "leaves a file that already ignores it untouched" do
+      File.write(File.join(@dir, ".gitignore"), "#{described_class::IGNORE_MARKER}\n.hcolumns/\n")
+      before = gitignore
+
+      expect(init.map(&:status)).to include(:unchanged)
+      expect(gitignore).to eq(before)
+    end
   end
 
   # The templates ARE what hcolumns runs in place (no copy in .claude/), so init

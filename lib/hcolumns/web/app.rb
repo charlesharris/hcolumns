@@ -22,7 +22,7 @@ module HColumns
       # analogue of the TUI's tick-on-IO-timeout. `clock` is the injectable wall
       # clock (real time by default, a lambda in tests) used to measure elapsed.
       def initialize(workspace:, root_id:, now:, session: nil, resolver: ModeResolver.new,
-                     feed: nil, clock: -> { Time.now }, dispatcher: nil)
+                     feed: nil, clock: -> { Time.now }, dispatcher: nil, executor: nil)
         @workspace = workspace
         @root_id = root_id
         @now = now
@@ -31,6 +31,7 @@ module HColumns
         @feed = feed
         @clock = clock
         @dispatcher = dispatcher
+        @executor = executor
         @start = clock.call if feed
       end
 
@@ -47,10 +48,29 @@ module HColumns
       # Release any events whose time has arrived into the graph (single-writer, on
       # request — the consumer drives the clock, exactly like Cascade#tick). Returns
       # whether anything new landed. A no-op for a static (non-live) App.
-      def pump
-        return false unless @feed
+      # Whether a click can also RUN work here (`hcol serve --dispatch`). Distinct
+      # from dispatch_available? on purpose: queuing is always on, executing is the
+      # gated half, and the client has to be able to tell them apart to know whether
+      # a queued Request will actually go anywhere.
+      def execution_available?
+        !@executor.nil?
+      end
 
-        @feed.release(@clock.call - @start, into: @workspace.graph)
+      # Release any events whose time has arrived into the graph, then — when
+      # execution is enabled — advance the dispatch loop by one step. This is the
+      # request-driven polling model the whole live serve already uses: the consumer
+      # drives the clock, and the browser asking for state is what moves the world
+      # forward. No supervisor thread, no second process on the log.
+      #
+      # Order matters. Events release FIRST so a Request queued a moment ago is in
+      # the graph before the executor asks what is outstanding; otherwise a click
+      # would always wait a full extra frame to start.
+      def pump
+        released = @feed ? @feed.release(@clock.call - @start, into: @workspace.graph) : false
+        return released unless @executor
+
+        advanced = @executor.advance(@workspace.graph)
+        released || advanced.positive?
       end
 
       # The log seq the client polls on — bumps as events are released.
@@ -104,6 +124,18 @@ module HColumns
       # Queue an arbitrary prompt from the browser (the web echo of `hcol ask`).
       def ask(prompt)
         @dispatcher&.ask(prompt)
+      end
+
+      # Re-run a failed task (the web echo of `hcol retry`). Nil without an executor,
+      # so a read-only serve 404s it rather than pretending to have tried.
+      def retry_task(task_key)
+        @executor&.retry_task(@workspace.graph, task_key)
+      end
+
+      # The branch a finished task left behind, for review-only merge-back: a click
+      # never merges anything, it shows you what to merge.
+      def review(task_key)
+        @executor&.review(task_key)
       end
 
       private

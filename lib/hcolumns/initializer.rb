@@ -56,8 +56,34 @@ module HColumns
       [
         copy(File.join(TEMPLATES, "agent_bridge_hook.rb"), hook_path, executable: true),
         copy(File.join(TEMPLATES, "SKILL.md"), File.join(@root, ".claude", "skills", "hcol", "SKILL.md")),
-        merge_settings
+        merge_settings,
+        ignore_runtime_artifacts
       ]
+    end
+
+    # Everything under .hcolumns/ is a RUNTIME artifact of this machine's runs — the
+    # live session log, per-task prompts and pane output, and the audit trail of what
+    # was dispatched. None of it is anyone else's business and all of it would be a
+    # merge conflict, so init claims the ignore rather than leaving every repo to
+    # discover the noise (or, worse, to commit its own audit log).
+    #
+    # Appends a marked block and never rewrites what is already there: .gitignore is
+    # the user's file, and an init that reformats it is an init people stop running.
+    IGNORE_MARKER = "# hcolumns runtime artifacts"
+    IGNORE_BLOCK = <<~GITIGNORE
+      #{IGNORE_MARKER} (hcol init) — local logs, per-task output, dispatch audit trail
+      .hcolumns/
+    GITIGNORE
+
+    def ignore_runtime_artifacts
+      path = File.join(@root, ".gitignore")
+      existing = File.file?(path) ? File.read(path) : ""
+      return Result.new(status: :unchanged, path: path) if existing.include?(IGNORE_MARKER)
+
+      body = existing.empty? || existing.end_with?("\n") ? existing : "#{existing}\n"
+      File.write(path, "#{body}#{existing.empty? ? '' : "\n"}#{IGNORE_BLOCK}")
+      Result.new(status: File.size?(path) && !existing.empty? ? :updated : :created, path: path,
+                 note: "ignoring .hcolumns/")
     end
 
     # The hook command written into settings.json. $CLAUDE_PROJECT_DIR keeps it

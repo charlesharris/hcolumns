@@ -61,6 +61,31 @@ RSpec.describe HColumns::Web::Server do
       expect(type).to eq("application/json")
       expect(JSON.parse(body)).to include("ok" => true, "queued" => "ask")
     end
+
+    # The gate (layer 34c): a plain serve can QUEUE but must not RUN. Queuing is as
+    # safe as `hcol ask`; executing spawns an agent with permissions skipped, so it
+    # is opt-in behind `--dispatch` and a read-only viewer refuses it outright.
+    it "404s /retry when execution is not enabled, even though queuing is" do
+      dispatcher = instance_double(HColumns::Dispatcher, ask: { ok: true, queued: "ask" })
+      queue_only = HColumns::Web::App.new(workspace: workspace, root_id: orders_id, now: now,
+                                          dispatcher: dispatcher)
+
+      expect(queue_only.execution_available?).to be false
+      expect(described_class.new(queue_only).respond("GET", "/retry", { "key" => "abc" }).first).to eq(404)
+    end
+
+    it "routes /retry and /review to the executor when --dispatch is on" do
+      executor = instance_double(HColumns::Executor, retry_task: { ok: true, retried: "abc" },
+                                                     review: { branch: "hcol/abc", diffstat: "1 file changed" },
+                                                     advance: 0)
+      wired = HColumns::Web::App.new(workspace: workspace, root_id: orders_id, now: now, executor: executor)
+
+      expect(wired.execution_available?).to be true
+      expect(JSON.parse(described_class.new(wired).respond("GET", "/retry", { "key" => "abc" }).last))
+        .to include("ok" => true)
+      expect(JSON.parse(described_class.new(wired).respond("GET", "/review", { "key" => "abc" }).last))
+        .to include("branch" => "hcol/abc")
+    end
   end
 
   describe "over a real socket" do

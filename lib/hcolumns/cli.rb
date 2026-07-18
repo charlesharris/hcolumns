@@ -56,6 +56,7 @@ module HColumns
         when "--live" then opts[:live] = true
         when "--echo" then opts[:echo] = true
         when "--worktree" then opts[:worktree] = true
+        when "--dispatch" then opts[:dispatch] = true
         when "--timeout" then opts[:timeout] = @argv.shift&.to_i
         when "--port" then opts[:port] = @argv.shift&.to_i
         when "--log" then opts[:log] = @argv.shift
@@ -355,6 +356,12 @@ module HColumns
         Start a session in this repo, then watch it:
           hcol serve .            the composed graph — files, git, and your session
           hcol walk . --live      …in the terminal
+          hcol serve . --dispatch …and a click can RUN the work, not just queue it.
+                                  Opt-in: without it the browser is a read-only viewer
+                                  that can still queue a Request (nothing runs). With
+                                  it, each dispatch is worktree-isolated on hcol/<key>
+                                  and recorded in .hcolumns/audit.jsonl; the branch is
+                                  surfaced for review — you do the merge.
       TXT
     end
 
@@ -589,6 +596,11 @@ module HColumns
     # connections can see. The push stratum (the bridge log's tail) folds into the
     # same graph, mounted under the root by BridgeMount.
     def project_server(dir, root: :dir)
+      # Built ONCE, outside the builder, and closed over. The build lambda re-runs on
+      # every re-projection, and the executor holds the in-flight task map — rebuilt
+      # per projection, a running task would be forgotten mid-flight and re-adopted
+      # from scratch on the next frame. The workspace is rebuilt; the loop is not.
+      executor = build_executor(dir)
       build = lambda do
         # Re-pin the clock per projection: a long-running server otherwise does
         # recency/decay math against its boot time. Safe: the builder only runs
@@ -600,10 +612,36 @@ module HColumns
         log = bridge_log(dir)
         dispatcher = Dispatcher.new(log: log, session: session || "live") if File.exist?(log)
         Web::App.new(workspace: workspace, root_id: start, now: now,
-                     session: session, feed: feed, dispatcher: dispatcher)
+                     session: session, feed: feed, dispatcher: dispatcher, executor: executor)
       end
       apps = Web::AppSource::Refreshing.new(build, probe: project_probe(dir))
       Web::Server.new(apps: apps, streaming: true, port: @opts[:port] || 4567)
+    end
+
+    # `hcol serve --dispatch` — the opt-in that lets a click RUN work, not just queue
+    # it (layer 34c). Without it a serve is a read-only viewer that can still queue a
+    # Request (safe as `hcol ask`: an intent, nothing runs), which is why the gate is
+    # here and not on the Dispatcher.
+    #
+    # UI-dispatched work is ALWAYS worktree-isolated — no flag, no way to turn it off.
+    # From the CLI, running in place is a defensible default because you are standing
+    # there; from a browser it is not, so a click can never dirty the checkout you are
+    # sitting in. `origin: "ui"` is what makes that distinction greppable afterwards.
+    def build_executor(dir)
+      return nil unless @opts[:dispatch]
+
+      log = bridge_log(dir)
+      return nil unless File.exist?(log) # nothing to queue onto means nothing to run
+
+      audit = Audit.for_root(dir)
+      worktrees = Worktrees.new(repo: dir)
+      strategy = @opts[:echo] ? Strategies::Echo.new : Strategies::TmuxClaudeCode.new(
+        root: dir, hcol_bin: ENV.fetch("HCOL_BIN", "hcol"),
+        worktrees: worktrees, audit: audit, origin: "ui"
+      )
+      Executor.new(runner: LLMTaskRunner.new(strategy: strategy, log: log,
+                                             session: @opts[:session] || "live"),
+                   worktrees: worktrees, audit: audit)
     end
 
     # A cheap fingerprint of the pull sources — sits on the request path
