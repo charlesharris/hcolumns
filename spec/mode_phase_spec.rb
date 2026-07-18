@@ -22,6 +22,35 @@ RSpec.describe "phase-driven modes" do
       expect(resolver.auto(source_file, session: session(:exploring)).name).to eq(:explorer)
     end
 
+    # Debugging used to open on `details` — the node's properties, which is right for
+    # inspecting a thing and wrong for chasing a failure. The evidence now leads.
+    describe "the debugging phase opens on the evidence" do
+      def failed_run
+        HColumns::Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "live:t1" },
+                           properties: { name: "✗ rspec", state: "failed",
+                                         output: ["Failure/Error: expect(a).to eq(b)", "  expected: 1", "  got: 2"] })
+      end
+
+      def passing_run
+        HColumns::Node.new(type: :TestRun, identity: { scheme: "agent.test", key: "live:t2" },
+                           properties: { name: "✓ rspec", state: "done", output: ["21 examples, 0 failures"] })
+      end
+
+      it "opens a FAILED run on the failing assertion" do
+        expect(resolver.auto(failed_run, session: session(:debugging)).name).to eq(:failure)
+      end
+
+      # Applicability does the branching, so there is no conditional policy anywhere:
+      # a green run simply has no failure to show and falls through to its output.
+      it "opens a PASSING run on its output, in the same phase" do
+        expect(resolver.auto(passing_run, session: session(:debugging)).name).to eq(:output)
+      end
+
+      it "still falls back to details for a node with no failure evidence to show" do
+        expect(resolver.auto(source_file, session: session(:debugging)).name).to eq(:details)
+      end
+    end
+
     it "won't promote a facet a node can't render" do
       # editing prefers the diff facet, but a SourceFile can't render it -> filtered
       modes = resolver.modes_for(source_file, session: session(:editing)).map(&:name)

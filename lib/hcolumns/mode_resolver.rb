@@ -26,8 +26,11 @@ module HColumns
       Commit: %i[gitdiff default details],
       CommitFile: %i[gitdiff commitsource details], # diff-first (blame arrival asks "what changed"), source a tab away
       ProposedChange: %i[diff reviewer details],
-      TestRun: %i[output default details],
-      LogLine: %i[output default details],
+      # `failure` leads, but only ever renders for a run that FAILED — its
+      # applies? does the branching, so a green run falls through to `output`
+      # with no conditional policy anywhere.
+      TestRun: %i[failure output default details],
+      LogLine: %i[output failure default details],
       Session: %i[default turns details],
       Sessions: %i[default details],
       # A transcript opens on the top consumers — arriving at "the context" and
@@ -51,7 +54,10 @@ module HColumns
       exploring: %i[explorer git],
       editing: %i[diff default],
       testing: %i[reviewer details],
-      debugging: %i[details git],
+      # Debugging asks "what broke and what changed" — so the evidence leads and
+      # the relations wait. Was `details git`, which opened on the node's
+      # properties: correct for inspecting a thing, wrong for chasing a failure.
+      debugging: %i[failure output gitdiff diff details],
       reviewing: %i[reviewer diff details]
     }.freeze
 

@@ -56,6 +56,7 @@ module HColumns
         modes[:gitdiff] = GitDiffMode.new # a commit's (or a file's, scoped) diff
         modes[:commitsource] = CommitSourceMode.new # a CommitFile's blob at that commit
         modes[:output] = OutputMode.new   # a test run / log line's captured output
+        modes[:failure] = FailureMode.new # …the failing assertion in it, foregrounded
         modes[:bead] = BeadMode.new       # a bead's body (description/design/notes)
         modes[:turns] = TurnsMode.new     # a session's log partitioned into turns
         modes[:context] = ContextMode.new       # a transcript's top context consumers
