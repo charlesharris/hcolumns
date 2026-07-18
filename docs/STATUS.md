@@ -1,19 +1,19 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-17 · **Branch:** `hc-ui-dispatch` (34a; off `main` at 33e) · **Tests:** 345 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-18 · **Branch:** `main` (34a merged; docs refresh on top) · **Tests:** 345 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed** (working tree clean, 345 ex green). `main` holds through **33e** (hc-4s4's
-> runner robustness fully closed: stall detector, tree-reaping stop, reconcile/survive-the-shell,
-> durable pipe-pane output, user-initiated `hcol retry`). The branch **`hc-ui-dispatch`** holds **34a**
-> — Phase A of the UI-dispatch hop (queue a Request from the browser), NOT yet merged.
+> ✅ **All work is committed, merged, and pushed** (working tree clean, 345 ex green, `main` in sync with
+> `origin/main`). `main` holds through **34a** — hc-4s4's runner robustness fully closed (stall detector,
+> tree-reaping stop, reconcile/survive-the-shell, durable pipe-pane output, user-initiated `hcol retry`)
+> *and* Phase A of the UI-dispatch hop (queue a Request from the browser), plus a README/screenshots
+> refresh on top. The `hc-ui-dispatch` and `hc-4s4-runner-robustness` branches were merged and deleted.
 >
 > **▶ RESUME HERE:** Phase B of the UI-dispatch hop — execute a queued dispatch, opt-in and
-> worktree-isolated. The full plan, with the decisions already locked *with* Charris, is the
-> **Dispatch from the UI** bullet in [§8](#8-next-up--open-threads). Merge `hc-ui-dispatch` to `main`
-> once Phase B lands (or sooner — Phase A is a coherent, shippable increment on its own).
+> worktree-isolated. Branch off `main`. The full plan, with the decisions already locked *with* Charris,
+> is the **Dispatch from the UI** bullet in [§8](#8-next-up--open-threads).
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
@@ -478,7 +478,7 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 1–33e are committed; tree clean, 333 ex green. The backlog lives in **beads** (`bd ready`;
+Layers 1–34a are committed and merged to `main`; tree clean, 345 ex green. The backlog lives in **beads** (`bd ready`;
 `hcol walk .` → the beads index). What follows is the prose that doesn't fit an issue. **Pick one**
 (decide the load-bearing ones *with* Charris first, per [[feedback-discuss-tradeoffs]] — present the
 trade-off and a worked use case before recommending).
@@ -513,7 +513,7 @@ trade-off and a worked use case before recommending).
   call — a failed/stalled task exposes a re-run affordance rather than auto-retrying); the Request/LLMTask
   split already makes a retry a second task, but nothing surfaces it yet. SIGWINCH was on this list until a
   real run **removed it by measurement**.
-- **Dispatch from the UI — the guiding star's last hop (IN PROGRESS, branch `hc-ui-dispatch`).** Scoped
+- **Dispatch from the UI — the guiding star's last hop (Phase A MERGED to `main`; Phase B is next).** Scoped
   *with* Charris into two halves so the safe win isn't gated behind the risky one. **Phase A — queue
   from the UI: DONE.** Three affordances land a Request on the bridge log the serve is tailing (the
   browser echo of ask/fix), shown live: an ask box in the header, a "▷ dispatch fix" button on a
