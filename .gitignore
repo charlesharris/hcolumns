@@ -62,6 +62,13 @@ build-iPhoneSimulator/
 # Live agent-bridge session log (hc-gzj) — a runtime artifact
 .hcolumns/live.jsonl
 
+# Runtime artifacts of the dispatch loop (hc-4s4): per-task prompt/log/pane-output,
+# and the append-only audit trail of what was dispatched and what it did. Local
+# history of local runs — never someone else's business, and never a merge conflict.
+.hcolumns/tasks/
+.hcolumns/audit.jsonl
+.hcolumns/flags.jsonl
+
 # Enabling the agent bridge is a per-developer opt-in: the .example is committed
 # (the hook itself lives in lib/hcolumns/templates/ — it ships in the gem, and we
 # run it in place); the active settings.json, which turns hooks on, stays local.

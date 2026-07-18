@@ -122,13 +122,32 @@ module HColumns
         end
       end
 
-      def initialize(root:, command: DEFAULT_COMMAND, tasks_dir: nil, hcol_bin: nil, clock: -> { Time.now })
+      # `worktrees:` is the seam the comment above always promised. Given a
+      # Worktrees, each task runs in its OWN checkout on branch hcol/<key> instead
+      # of in @root — the agent commits there and the human's working tree is never
+      # touched. Nil keeps the historical behaviour (run in place), which is what
+      # the CLI does without --worktree.
+      #
+      # `audit:` is nil-tolerant for the same reason the runner's other collaborators
+      # are: a test double should not have to grow a disk file to exercise spawning.
+      # The CLI always passes one.
+      def initialize(root:, command: DEFAULT_COMMAND, tasks_dir: nil, hcol_bin: nil,
+                     worktrees: nil, audit: nil, origin: "cli", clock: -> { Time.now })
         @root = File.expand_path(root)
         @command = command
+        # Tasks stay under the MAIN repo, never the worktree: the logs and the durable
+        # pane output are the record of the task, and they have to outlive a worktree
+        # that gets removed. It is also what lets adopt/2 find them from the key alone
+        # without first resolving which tree the task happened to run in.
         @tasks_dir = tasks_dir || File.join(@root, ".hcolumns", "tasks")
         @hcol_bin = hcol_bin || "hcol"
+        @worktrees = worktrees
+        @audit = audit
+        @origin = origin
         @clock = clock
       end
+
+      attr_reader :worktrees
 
       # The TUI's input prompt. Matched as the bare glyph on purpose: gastown
       # matched "❯ " with a regular space and broke, because Claude Code emits a
@@ -153,23 +172,40 @@ module HColumns
         out.match?(READY_PROMPT) && !out.match?(TRUST_DIALOG)
       end
 
-      Handle = Struct.new(:session, :log, :prompt_file, :pane_out, :started_at, :pane, :delivered,
-                          :last_progress_at, :last_size, :last_activity, keyword_init: true)
+      Handle = Struct.new(:key, :session, :log, :prompt_file, :pane_out, :started_at, :pane, :delivered,
+                          :last_progress_at, :last_size, :last_activity, :root, :branch, keyword_init: true)
 
       def start(task)
         FileUtils.mkdir_p(@tasks_dir)
-        handle = Handle.new(session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
+        handle = Handle.new(key: task.key, session: session_name(task.key), log: File.join(@tasks_dir, "#{task.key}.jsonl"),
                             prompt_file: File.join(@tasks_dir, "#{task.key}.prompt"),
                             pane_out: File.join(@tasks_dir, "#{task.key}.pane"),
-                            started_at: @clock.call, delivered: false, last_size: 0)
+                            started_at: @clock.call, delivered: false, last_size: 0,
+                            root: workspace_for(task.key), branch: @worktrees&.branch_for(task.key))
         File.write(handle.prompt_file, "#{task.prompt}\n")
+
+        # Recorded BEFORE the pane exists, so an agent that wedges on its first
+        # breath still leaves a record of having been started — the gap an
+        # after-the-fact audit would have.
+        audit(:spawn, task.key, request_id: task.request_id, root: handle.root, branch: handle.branch,
+                               command: @command, session: handle.session, prompt: task.prompt.to_s)
 
         kill(handle.session) # idempotent: hugel3 kills first rather than check-then-create
         spawn(handle)
         handle.pane = resolve_pane(handle.session)
         start_pipe(handle) # durable output channel, attached the moment the pane exists
-        accept_trust(handle) unless self.class.trusted?(@root)
+        # A FRESH worktree is a folder Claude Code has never seen, so the trust
+        # dialog is expected here rather than incidental — the check is per-root,
+        # not per-repo, and accept_trust is what clears it.
+        accept_trust(handle) unless self.class.trusted?(handle.root)
         handle
+      end
+
+      # Where this task's agent actually runs. With worktrees configured this
+      # CREATES the tree (idempotently) — the one place the isolation is materialised,
+      # so nothing else in the strategy has to know whether it is isolated or not.
+      def workspace_for(key)
+        @worktrees ? @worktrees.ensure(key) : @root
       end
 
       # Attach a DURABLE output channel the moment the pane exists (hc-4s4, pipe-pane).
@@ -218,7 +254,17 @@ module HColumns
       # the Stop hook emits — harness-enforced, so it cannot be fooled by a
       # cosmetic string or by the prompt echoing itself. Verified against a real
       # agent: the hook fired ~4s after it answered.
+      # Wrapped so that EVERY terminal outcome funnels through one audit point.
+      # Auditing at each `return` would be four call sites and a fifth one waiting to
+      # be forgotten the next time a failure mode is added — and a missing outcome
+      # record is indistinguishable from a task that never ended.
       def poll(handle)
+        result = poll_result(handle)
+        audit_outcome(handle, result) unless result == :running
+        result
+      end
+
+      def poll_result(handle)
         # Finished-on-disk wins over a vanished pane. A task this runner ADOPTED after
         # a restart may have completed and had its pane close before we looked — the
         # answer is still on disk, so read it back rather than mourn it as a failure.
@@ -252,12 +298,18 @@ module HColumns
       # was pasted long ago, and re-delivering would inject the prompt a second time.
       def adopt(key)
         session = session_name(key)
-        handle = Handle.new(session: session, log: File.join(@tasks_dir, "#{key}.jsonl"),
+        handle = Handle.new(key: key, session: session, log: File.join(@tasks_dir, "#{key}.jsonl"),
                             prompt_file: File.join(@tasks_dir, "#{key}.prompt"),
                             pane_out: File.join(@tasks_dir, "#{key}.pane"), # same durable file the original run pipes to
                             started_at: @clock.call, delivered: true, last_size: 0,
-                            last_progress_at: @clock.call)
+                            last_progress_at: @clock.call,
+                            # Derived, never re-created: adopting must not resurrect a
+                            # worktree a cleanup already removed. The path is where the
+                            # tree WAS, which is what the audit record wants either way.
+                            root: @worktrees ? @worktrees.path_for(key) : @root,
+                            branch: @worktrees&.branch_for(key))
         handle.pane = resolve_pane(session) if alive?(session)
+        audit(:adopt, key, root: handle.root, branch: handle.branch, session: session)
         handle
       end
 
@@ -343,6 +395,32 @@ module HColumns
 
       private
 
+      # One line per auditable moment. `origin` rides on every record because it is
+      # the question the log exists to answer: a task that ran because someone
+      # clicked in a browser should be distinguishable from one you started
+      # yourself, without inferring it from timestamps.
+      def audit(event, key, **fields)
+        @audit&.record("dispatch.#{event}", key: key, origin: @origin, **fields)
+      end
+
+      # What the agent DID, asked of git rather than of the agent. The response text
+      # is the agent's own account and is recorded as such; the sha and diffstat are
+      # the part that cannot be talked around. Best-effort — a repo question that
+      # fails must not turn a finished task into a failed one.
+      def audit_outcome(handle, result)
+        facts = { status: result[:status].to_s, response: result[:response].to_s }
+        if @worktrees && handle.key
+          begin
+            facts[:head] = @worktrees.head(handle.key)
+            facts[:diffstat] = @worktrees.diffstat(handle.key)
+            facts[:commits] = @worktrees.commits(handle.key).map { |c| c[:sha] }
+          rescue StandardError => e
+            facts[:repo_error] = e.message
+          end
+        end
+        audit(:outcome, handle.key, branch: handle.branch, **facts)
+      end
+
       def session_name(key)
         # No dots or colons: tmux reads those as target syntax (gastown validates
         # against exactly this).
@@ -354,7 +432,7 @@ module HColumns
       # instead of scraped.
       def spawn(handle)
         tmux("new-session", "-d", "-s", handle.session, "-x", WIDTH.to_s, "-y", HEIGHT.to_s,
-             "-c", @root, "-e", "HCOL_BRIDGE_LOG=#{handle.log}", "-e", "HCOL_BIN=#{@hcol_bin}",
+             "-c", handle.root || @root, "-e", "HCOL_BRIDGE_LOG=#{handle.log}", "-e", "HCOL_BIN=#{@hcol_bin}",
              @command)
       end
 

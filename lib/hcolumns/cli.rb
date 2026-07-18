@@ -55,6 +55,7 @@ module HColumns
         when "--strict" then opts[:role] = "reviewer"
         when "--live" then opts[:live] = true
         when "--echo" then opts[:echo] = true
+        when "--worktree" then opts[:worktree] = true
         when "--timeout" then opts[:timeout] = @argv.shift&.to_i
         when "--port" then opts[:port] = @argv.shift&.to_i
         when "--log" then opts[:log] = @argv.shift
@@ -307,10 +308,19 @@ module HColumns
     # The default is a real agent in a real pane you can `tmux attach` to and take
     # over — the reason to want tmux over a headless call. --echo swaps in the
     # double, so the wiring can be exercised without spending a token.
+    #
+    # --worktree isolates each task in its own checkout on branch hcol/<key>
+    # (layer 34b), so the agent commits there and this working tree is never
+    # touched. Opt-in from the CLI because running in place is often what you
+    # actually want when you are sitting right there; UI-dispatched work will pass
+    # it always, since a browser click must not be able to dirty your checkout.
     def run_strategy
       return Strategies::Echo.new if @opts[:echo]
 
-      Strategies::TmuxClaudeCode.new(root: Dir.pwd, hcol_bin: ENV.fetch("HCOL_BIN", "hcol"))
+      Strategies::TmuxClaudeCode.new(root: Dir.pwd, hcol_bin: ENV.fetch("HCOL_BIN", "hcol"),
+                                     worktrees: (Worktrees.new(repo: Dir.pwd) if @opts[:worktree]),
+                                     audit: Audit.for_root(Dir.pwd),
+                                     origin: @opts[:origin] || "cli")
     end
 
     # `hcol init [dir]` — install the bridge hook + skill into any repo (hc-ouk),
@@ -943,6 +953,10 @@ module HColumns
                                      yet. Drives Claude Code in a tmux pane you can attach to and
                                      take over; each task flips ◌ → ◐ → ✓ in the columns as it goes.
                                      --echo uses the test double (no tokens); --timeout N (default 600)
+                                     --worktree runs each task in its own checkout on branch
+                                     hcol/<key>, so the agent commits there and THIS working tree is
+                                     never touched. Every run appends to .hcolumns/audit.jsonl:
+                                     what was asked, what was run, and what git says it changed.
           hcol retry [task-key]      re-run failed work as a fresh task on the same request (history
                                      isn't rewritten). No key: every request whose only outcome is a
                                      failure. A key: that one, even if it succeeded. USER-initiated —
