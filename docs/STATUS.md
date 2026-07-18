@@ -1,19 +1,25 @@
 # hcolumns — Status & Handoff
 
-**Updated:** 2026-07-18 · **Branch:** `main` (34a merged; docs refresh on top) · **Tests:** 345 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
+**Updated:** 2026-07-18 · **Branch:** `main` (through 34c — the UI-dispatch hop is CLOSED) · **Tests:** 395 examples, 0 failures · **Runtime deps:** none required (`ruby-mysql` is a *soft* dep — without it only the beads provider is off)
 
 This is the "where we are / how to resume" doc. For the *why* see [`DESIGN.md`](DESIGN.md)
 (the charter); deeper decision history lives in the project memory.
 
-> ✅ **All work is committed, merged, and pushed** (working tree clean, 345 ex green, `main` in sync with
-> `origin/main`). `main` holds through **34a** — hc-4s4's runner robustness fully closed (stall detector,
+> ✅ **All work is committed, merged, and pushed** (working tree clean, 395 ex green, `main` in sync with
+> `origin/main`). `main` holds through **34c**: hc-4s4's runner robustness fully closed (stall detector,
 > tree-reaping stop, reconcile/survive-the-shell, durable pipe-pane output, user-initiated `hcol retry`)
-> *and* Phase A of the UI-dispatch hop (queue a Request from the browser), plus a README/screenshots
-> refresh on top. The `hc-ui-dispatch` and `hc-4s4-runner-robustness` branches were merged and deleted.
+> **and the whole UI-dispatch hop — the guiding star's last hop — now CLOSED.** A click in the browser
+> queues a Request (34a), and with `hcol serve . --dispatch` it *runs*: worktree-isolated on `hcol/<key>`,
+> recorded in `.hcolumns/audit.jsonl`, with the resulting branch surfaced for review-only merge-back
+> (34b/34c). All feature branches merged and deleted.
 >
-> **▶ RESUME HERE:** Phase B of the UI-dispatch hop — execute a queued dispatch, opt-in and
-> worktree-isolated. Branch off `main`. The full plan, with the decisions already locked *with* Charris,
-> is the **Dispatch from the UI** bullet in [§8](#8-next-up--open-threads).
+> **▶ RESUME HERE:** the star is reached, so the next move is a CHOICE rather than a continuation —
+> pick from [§8](#8-next-up--open-threads). The two most load-bearing: **goal biases ranking** (the
+> hugel-v1 "soil" — reaches into the tuner/score, work the use case through with Charris first) and
+> **sharpening the `debugging` phase** (small: a `Mode#panel` tweak + a resolver entry). Also worth a
+> pass now that dispatch is real: **surfacing a task's branch as a first-class graph node** — `review`
+> returns the branch/diffstat over HTTP, but no edge yet links `:LLMTask` → `:Commit`/`:Branch`, so the
+> existing `gitdiff` facet can't reach it (needs `:repo`/`:sha` on a node to apply).
 >
 > **Where we are (the arc so far):** property graph → columns → cascade/TUI → lazy providers
 > (fs/naming/git/ruby) → lenses → two-mode confidence → **event log** under the read-model →
@@ -478,7 +484,7 @@ same column without recompute.
 
 ## 8. NEXT UP — open threads
 
-Layers 1–34a are committed and merged to `main`; tree clean, 345 ex green. The backlog lives in **beads** (`bd ready`;
+Layers 1–34c are committed and merged to `main`; tree clean, 395 ex green. The backlog lives in **beads** (`bd ready`;
 `hcol walk .` → the beads index). What follows is the prose that doesn't fit an issue. **Pick one**
 (decide the load-bearing ones *with* Charris first, per [[feedback-discuss-tradeoffs]] — present the
 trade-off and a worked use case before recommending).
@@ -513,7 +519,7 @@ trade-off and a worked use case before recommending).
   call — a failed/stalled task exposes a re-run affordance rather than auto-retrying); the Request/LLMTask
   split already makes a retry a second task, but nothing surfaces it yet. SIGWINCH was on this list until a
   real run **removed it by measurement**.
-- **Dispatch from the UI — the guiding star's last hop (Phase A MERGED to `main`; Phase B is next).** Scoped
+- **Dispatch from the UI — the guiding star's last hop: CLOSED (34a/34b/34c, all on `main`).** Scoped
   *with* Charris into two halves so the safe win isn't gated behind the risky one. **Phase A — queue
   from the UI: DONE.** Three affordances land a Request on the bridge log the serve is tailing (the
   browser echo of ask/fix), shown live: an ask box in the header, a "▷ dispatch fix" button on a
@@ -527,17 +533,28 @@ trade-off and a worked use case before recommending).
   execution (plain serve stays a read-only viewer); a dispatch spawns a DETACHED `hcol run --worktree`
   scoped to that request → the agent edits in a `git worktree` on branch `hcol/<key>` → commits there;
   **review-only merge-back** (the branch/diff is surfaced, the human merges — a browser click never
-  touches the working tree). Retry-from-UI folds in here (it needs execution — `runner.retry` submits a
-  new task). Still to design: the detached-process/worktree lifecycle, the `--worktree` run mode, and
-  surfacing the resulting branch/diff (existing `gitdiff` facets). `hc-4s4`.
+  touches the working tree). **Phase B — execute: DONE (34b/34c).** The detached-process question
+  DISSOLVED on contact: `tmux new-session -d` already detaches, so there was never a supervisor to keep
+  alive — the real question was only *who polls*, and the answer is the serve does, on the request path,
+  the same request-driven model `/state` already uses (no thread, no second writer on the log). `Worktrees`
+  gives a checkout per task under `.git/hcolumns/worktrees/<key>` on `hcol/<key>`, keeping the branch on
+  cleanup because the commits are the deliverable; `Audit` appends what was asked, what ran, who asked
+  (`cli` vs `ui`) and what *git* says changed, beside what the agent claims. `--worktree` on `hcol run`,
+  `--dispatch` gating the serve, retry-from-UI and review-only merge-back all landed. **On the permission
+  trade (Charris's call):** `--dangerously-skip-permissions` STAYS — an unattended agent can't be gated by
+  an interactive approval loop without defeating dispatch — so the compensation is layered and mostly
+  preventive: loopback-only serve (no `--host`, now pinned by a spec because adding one would quietly make
+  a click remote code execution), opt-in execution, worktree isolation; the audit log covers the rest
+  detectively. A worktree is NOT a sandbox and the code says so. *Still open:* a task's branch as a
+  first-class graph node (see the resume banner). `hc-4s4`.
 - **Retry — DONE for the CLI (33e), USER-initiated by decision (Charris's call).** `hcol retry [task-key]`
   re-runs failed work as a fresh SECOND task on the same Request (history isn't rewritten — the failed
   task stays as what happened, and `outstanding` stays satisfied so a later `hcol run` won't also re-fire
   it). No key: every request whose ONLY outcome so far is failure, one retry per request (never once-per-
   failed-task, never one that also has a done/in-flight task). A key: that one, even if it succeeded, since
   the user asked by name. NOTHING auto-retries — the stall detector fails fast so the human sees it and
-  *chooses*. *Still open:* the same affordance in the UI (`hcol serve` — a click on a failed task), which
-  folds into the UI-dispatch hop below rather than being its own thing.
+  *chooses*. **The UI affordance is now DONE too (34c):** a failed task shows `↻ retry` under
+  `--dispatch`, still user-initiated, still a fresh second task on the same Request.
 
 - **Sharpen the `debugging` phase (content facets now exist).** Layer 14 added `source`/`gitdiff`/
   `output` facets, so a `TestRun`/`LogLine` already shows its captured output. What's *not* done: a
